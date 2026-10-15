@@ -1,0 +1,10 @@
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+PuLP>=2.7
+plotly>=5.18        # also provides the offline plotly.min.js used by the web UI
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.0
+matplotlib>=3.7
+shapely>=2.0       # only for webapp/geo/make_geo.py (rebuilding the map files)

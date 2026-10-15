@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimal Crop-Area Allocation</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/vendor/plotly.min.js"></script>
+<script src="/static/icons.js"></script>
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <span class="brand-ic" data-ic="sprout"></span>
+    <div><b>Crop-Area LP</b><small>23MNG336 Operations Research</small></div>
+  </div>
+
+  <nav class="menu">
+    <a href="#overview" data-ic="house">Overview</a>
+    <a href="#data" data-ic="database">Data</a>
+    <a href="#model" data-ic="sliders-horizontal">Model inputs</a>
+    <a href="#results" data-ic="chart-column">Results</a>
+    <a href="#crops" data-ic="wheat">Crops</a>
+    <a href="#sensitivity" data-ic="trending-up">Sensitivity</a>
+    <a href="#districts" data-ic="map">Districts</a>
+  </nav>
+
+  <div class="solvers">
+    <p class="side-label"><span data-ic="cpu"></span>Solvers</p>
+    <dl>
+      <dt>PuLP · CBC</dt><dd>Primary LP solver</dd>
+      <dt>SciPy linprog · HiGHS</dt><dd>Independent cross-check</dd>
+    </dl>
+    <p class="agree" id="agree"></p>
+  </div>
+</aside>
+
+<div class="main">
+  <header class="ctx">
+    <label class="field"><span data-ic="map"></span>State <select id="selState" disabled></select></label>
+    <label class="field">Season <select id="selSeason" disabled></select></label>
+    <a class="badge hidden" id="customBadge" href="#model" title="Model inputs differ from the defaults">Custom inputs</a>
+    <span class="status" id="status"></span>
+  </header>
+
+  <!-- Overview ----------------------------------------------------------->
+  <section class="page" id="overview">
+    <p class="kicker">Operations Research project</p>
+    <h1>Optimal Crop-Area Allocation for Agricultural Resource Planning</h1>
+    <p class="lead">A linear-programming approach using district-level crop production data from the Government of India.</p>
+    <p class="authors">Nitin Krishna V · Vishal Suresh · Manogna Challa · Gaurav Mahesh — Amrita School of AI, Coimbatore</p>
+
+    <div class="grid3">
+      <div class="card"><h3>Problem</h3><p>Land is fixed and yields differ several-fold between crops, yet land is allocated by habit, not by comparing the yield records that already exist.</p></div>
+      <div class="card"><h3>Approach</h3><p>Two linear programs whose every coefficient (yield, minimum and maximum area) comes from the government crop record.</p></div>
+      <div class="card"><h3>Scope</h3><p>One state and one season, yields averaged over the available years. No price data exists, so we optimise output and land, not profit.</p></div>
+    </div>
+
+    <h2>Questions</h2>
+    <div class="grid2">
+      <div class="card q"><span class="tag">Q1</span><p><b>Maximise output.</b> With a fixed land budget, how many hectares per crop give the most total production?</p></div>
+      <div class="card q"><span class="tag">Q2</span><p><b>Minimise land.</b> To produce at least the historical output, what is the smallest area needed?</p></div>
+    </div>
+
+    <h2>Headline results <span class="scope" data-scope></span></h2>
+    <div class="kpis" id="kpiOverview"></div>
+
+    <div class="grid2 charts map-row">
+      <div>
+        <h2>Output gain by state <span class="scope" id="mapSeason"></span></h2>
+        <p class="note">Model 1 solved for every state. Click a state to load it.</p>
+        <div class="chart" id="chIndia"></div>
+      </div>
+      <div>
+        <h2>All states ranked</h2>
+        <p class="note">Output gain on the same land (Model 1).</p>
+        <div class="chart" id="chStates"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Data --------------------------------------------------------------->
+  <section class="page" id="data">
+    <h1>Data <span class="scope" data-scope></span></h1>
+    <div class="kpis" id="kpiState"></div>
+
+    <div class="grid2 charts">
+      <div><h2>What is grown</h2><p class="note">Average area per year. Grey crops are counted in nuts or bales, or lack enough years, so they stay out of the LP.</p><div class="chart" id="chCropArea"></div></div>
+      <div><h2>Area and production of the LP crops</h2><p class="note">Totals per year for the crops in the model.</p><div class="chart" id="chYearly"></div></div>
+    </div>
+
+    <div class="grid2 charts">
+      <div><h2>Yield trends of the five largest crops</h2><p class="note">Production ÷ area each year. The LP uses the average.</p><div class="chart" id="chTrend"></div></div>
+      <div><h2>Records per year</h2><p class="note">Darker bars are the years averaged; partial years at the edges are left out.</p><div class="chart" id="chYears"></div></div>
+    </div>
+
+    <h2>LP coefficients: average yield per crop</h2>
+    <p class="note">Bars are y<sub>c</sub>; whiskers show ±1 standard deviation across years. The model favours crops on the left.</p>
+    <div class="chart" id="chYield"></div>
+
+    <h2>Dataset and cleaning</h2>
+    <div class="grid2">
+      <table class="facts">
+        <tr><th>Dataset</th><td>District-wise, Season-wise Crop Production Statistics</td></tr>
+        <tr><th>Source</th><td>Ministry of Agriculture &amp; Farmers Welfare, data.gov.in</td></tr>
+        <tr><th>Size</th><td>575,879 rows · 36 states · crop years 1997–2020</td></tr>
+        <tr><th>Missing</th><td>Price and cost, so the objective is output or land, not profit</td></tr>
+      </table>
+      <div>
+        <div id="cleaning"></div>
+        <div id="excluded"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Model -------------------------------------------------------------->
+  <section class="page" id="model">
+    <h1>Model inputs <span class="scope" data-scope></span></h1>
+    <p class="note">Two linear programs share these inputs: <b>Model 1</b> maximises output on the land available,
+      <b>Model 2</b> finds the least land that meets the production target. Change any input and every page re-solves.
+      The defaults reproduce the report.</p>
+
+    <div class="inputs">
+      <div class="card input">
+        <div class="in-head"><h3>Land available</h3><span class="in-val" id="vLand"></span></div>
+        <p class="in-desc">Model 1 · total area the crops may use, as % of historical land.</p>
+        <input type="range" id="inLand" min="50" max="150" step="1" value="100">
+        <p class="in-hint" id="hLand"></p>
+      </div>
+      <div class="card input">
+        <div class="in-head"><h3>Production target</h3><span class="in-val" id="vTarget"></span></div>
+        <p class="in-desc">Model 2 · output that must be reached, as % of historical output.</p>
+        <input type="range" id="inTarget" min="50" max="150" step="1" value="100">
+        <p class="in-hint" id="hTarget"></p>
+      </div>
+      <div class="card input">
+        <div class="in-head"><h3>Area limits per crop</h3><span class="in-val" id="vBounds"></span></div>
+        <p class="in-desc">How far each crop's area may move.</p>
+        <div class="seg small" id="segBounds">
+          <button type="button" data-bounds="historical">Historical min to max</button>
+          <button type="button" data-bounds="band">Around average</button>
+        </div>
+        <div id="bandRow"><input type="range" id="inBand" min="5" max="100" step="5" value="20"></div>
+        <p class="in-hint" id="hBounds"></p>
+      </div>
+      <div class="card input">
+        <div class="in-head"><h3>Minimum land under pulses</h3><span class="in-val" id="vPulse"></span></div>
+        <p class="in-desc">Keeps pulses in the plan for nutrition and crop rotation.</p>
+        <input type="range" id="inPulse" min="0" max="60" step="1" value="0">
+        <p class="in-hint" id="hPulse"></p>
+      </div>
+      <div class="card input">
+        <div class="in-head"><h3>Yield estimate</h3><span class="in-val" id="vYield"></span></div>
+        <p class="in-desc">How each crop's yearly yields are combined into one number.</p>
+        <div class="seg small" id="segYield">
+          <button type="button" data-yield="mean">Mean</button>
+          <button type="button" data-yield="median">Median</button>
+          <button type="button" data-yield="weighted">Area-weighted</button>
+        </div>
+        <p class="in-hint" id="hYield"></p>
+      </div>
+      <div class="card input">
+        <div class="in-head"><h3>Constraints in use</h3></div>
+        <ul class="active" id="activeList"></ul>
+        <button type="button" class="btn" id="btnReset">Reset to defaults</button>
+      </div>
+    </div>
+
+    <h2>Effect of your inputs</h2>
+    <div class="kpis" id="kpiEffect"></div>
+    <p class="note" id="effectNote"></p>
+    <div class="chart" id="chCompare"></div>
+
+    <div class="grid2">
+      <div>
+        <h2>How the solution works</h2>
+        <p>Every crop starts at its lower area limit. Remaining land goes to the highest-yield crop first, up to its
+          upper limit, then the next. The crop where land runs out sits between its limits, and its yield is the value
+          of one more hectare (the shadow price λ*). A pulse floor forces some land to low-yield pulses first, so
+          the gain shrinks.</p>
+      </div>
+      <div>
+        <h2>Assumptions</h2>
+        <ul>
+          <li>Only crops measured by weight are pooled (no nuts or bales).</li>
+          <li>Yields are averages over 1998–2019; weather is not modelled.</li>
+          <li>Area limits come from each crop's own history.</li>
+          <li>Prices and costs are not in the data, so the objective is output, not profit.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Results ------------------------------------------------------------>
+  <section class="page" id="results">
+    <h1>Results <span class="scope" data-scope></span></h1>
+    <div class="seg" role="tablist">
+      <button type="button" data-model="1" class="on">Model 1 · Max output</button>
+      <button type="button" data-model="2">Model 2 · Min land</button>
+    </div>
+    <div class="kpis" id="kpiModel"></div>
+    <p class="note" id="modelNote"></p>
+
+    <h2>What the plan says</h2>
+    <ul class="interp" id="interp"></ul>
+
+    <div class="grid2 charts">
+      <div><h2>Hectares per crop</h2><div class="chart" id="chAlloc"></div></div>
+      <div><h2>Change from history</h2><div class="chart" id="chChange"></div></div>
+    </div>
+
+    <h2>Where the extra output comes from</h2>
+    <p class="note">Output change per crop = y<sub>c</sub> × change in hectares. Bars add up to the total change.</p>
+    <div class="chart" id="chOutput"></div>
+
+    <h2>Allocation table</h2>
+    <div class="table-wrap" id="allocTable"></div>
+  </section>
+
+  <!-- Crops ---------------------------------------------------------->
+  <section class="page" id="crops">
+    <h1>Crops <span class="scope" data-scope></span></h1>
+    <p class="note">The LP moves land toward crops that yield well <i>here</i>. Pick a crop to see how this state's yield compares with the rest of India.</p>
+    <div class="chips" id="cropChips"></div>
+    <div class="kpis" id="kpiCrop"></div>
+    <div class="grid2 charts map-row">
+      <div><h2>Yield by state <span class="scope" id="cropMapNote"></span></h2><div class="chart" id="chCropMap"></div></div>
+      <div><h2>States ranked by yield</h2><div class="chart" id="chCropRank"></div></div>
+    </div>
+  </section>
+
+  <!-- Sensitivity -------------------------------------------------------->
+  <section class="page" id="sensitivity">
+    <h1>Sensitivity <span class="scope" data-scope></span></h1>
+    <div class="grid2 charts">
+      <div><h2>Optimal output vs land budget</h2><div class="chart" id="chCurve"></div></div>
+      <div><h2>Value of one more hectare (λ*)</h2><div class="chart" id="chLam"></div></div>
+    </div>
+    <p class="note">Returns diminish: λ* falls in steps as each high-yield crop reaches its maximum area.</p>
+
+    <h2>Limiting how far each crop may move</h2>
+    <p class="note">The full gain needs crops to swing between their historical minimum and maximum. A cautious plan keeps each crop within ±p% of its average area.</p>
+    <div class="chart" id="chBand"></div>
+  </section>
+
+  <!-- Districts ---------------------------------------------------------->
+  <section class="page" id="districts">
+    <h1>Districts <span class="scope" data-scope></span></h1>
+    <p class="note" id="distNote">Both models solved separately for every district, each with its own land, output and bounds.</p>
+    <div class="grid2 charts">
+      <div><h2>Output gain on the map</h2><div class="chart" id="chDistMap"></div></div>
+      <div><h2>Gain by district</h2><div class="chart" id="chDist"></div></div>
+    </div>
+    <div class="charts">
+      <h2>More crops, more room to gain</h2>
+      <p class="note">Each dot is a district. Districts that grow many crops have more land to move toward high-yield crops.</p>
+      <div class="chart" id="chDistScatter"></div>
+    </div>
+  </section>
+
+  <footer class="pager">
+    <a class="btn" id="prev" href="#"><span data-ic="chevron-left"></span><span class="t"></span></a>
+    <a class="btn" id="next" href="#"><span class="t"></span><span data-ic="chevron-right"></span></a>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

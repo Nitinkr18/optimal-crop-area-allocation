@@ -2,7 +2,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const DEF = { land_pct: 100, target_pct: 100, bounds: "historical", band_pct: 20, pulse_share: 0, yield_method: "mean" };
-const S = { seasons: {}, r: null, india: {}, geo: null, model: 1, last: null, crop: null, cropData: {}, set: { ...DEF }, base: {} };
+const S = { seasons: {}, blocked: {}, r: null, india: {}, geo: null, model: 1, last: null, crop: null, cropData: {}, set: { ...DEF }, base: {} };
 const isDefault = (st) => Object.keys(DEF).every((k) => st[k] === DEF[k]);
 const indiaKey = (season) => `${season}|${JSON.stringify(S.set)}`;
 const INK = "#111", ACC = "#2f6f4e", ACC_L = "#9fc5ad", GREY = "#c9c9c9", MUTED = "#8a8a8a";
@@ -142,16 +142,26 @@ window.addEventListener("hashchange", show);
 const current = () => PAGES.find((p) => $("#" + p).classList.contains("on"));
 
 // ------------------------------------------------------------------ selection
+// Seasons with fewer than 2 crops reported in enough years have no LP (the server lists them in `blocked`).
+// They stay in the menu, greyed out with the reason, so a missing season is explained rather than hidden.
+const usable = (state) => (S.seasons[state] || []).filter((s) => !(S.blocked[state] || []).includes(s));
 function fillSelects(state, season) {
-  const st = $("#selState"), se = $("#selSeason");
-  st.innerHTML = Object.keys(S.seasons).map((s) => `<option ${s === state ? "selected" : ""}>${esc(s)}</option>`).join("");
-  se.innerHTML = S.seasons[state].map((s) => `<option ${s === season ? "selected" : ""}>${esc(s)}</option>`).join("");
+  const st = $("#selState"), se = $("#selSeason"), off = S.blocked[state] || [];
+  st.innerHTML = Object.keys(S.seasons).map((s) => { const none = !usable(s).length;
+    return `<option value="${esc(s)}" ${s === state ? "selected" : ""} ${none ? "disabled" : ""}>${esc(s)}${none ? " (too few crops)" : ""}</option>`; }).join("");
+  se.innerHTML = S.seasons[state].map((s) => { const no = off.includes(s);
+    return `<option value="${esc(s)}" ${s === season ? "selected" : ""} ${no ? "disabled" : ""}>${esc(s)}${no ? " (too few crops)" : ""}</option>`; }).join("");
   st.disabled = se.disabled = false;
 }
+// A new state is kept: if the current season has no LP there, its first season that has one is used instead.
 function selectState(state) {
   if (!S.seasons[state]) return;
-  const se = $("#selSeason").value;
-  fillSelects(state, S.seasons[state].includes(se) ? se : S.seasons[state][0]);
+  const ok = usable(state), se = $("#selSeason").value;
+  if (!ok.length) return status(`${state}: no season has at least 2 crops reported in enough years for an LP.`, true);
+  const season = ok.includes(se) ? se : ok[0];
+  S.note = season === se ? null : S.seasons[state].includes(se) ? `${state} has too few ${se} crops for an LP, so ${season} is shown.`
+    : `${state} has no ${se} season in the data, so ${season} is shown.`;
+  fillSelects(state, season);
   run();
 }
 $("#selState").onchange = () => selectState($("#selState").value);
@@ -165,7 +175,7 @@ function setModel(m) {
 }
 $$("[data-model]").forEach((b) => b.onclick = () => setModel(+b.dataset.model));
 
-async function run() {
+async function run(retry = true) {
   const state = $("#selState").value, season = $("#selSeason").value, settings = { ...S.set };
   status(`Solving ${state} · ${season}…`);
   document.body.classList.add("loading");
@@ -180,10 +190,18 @@ async function run() {
     S.r = r; S.india[indiaKey(season)] = ind; S.last = [state, season, settings];
     S.base[bkey] = custom ? base : r;
     render();
-    status(`${r.coef.length} crops · ${r.years[0]}–${r.years[1]}`);
+    status(S.note || `${r.coef.length} crops · ${r.years[0]}–${r.years[1]}`);
+    S.note = null;
     draw(current());
     S.flash = false;
   } catch (e) {
+    const moved = S.last && (S.last[0] !== state || S.last[1] !== season);
+    if (retry && moved && !isDefault(settings)) {             // custom inputs have no solution here: stay, use defaults
+      S.set = { ...DEF };
+      S.note = `Your inputs have no solution for ${state} · ${season}, so the default inputs are shown.`;
+      return run(false);
+    }
+    S.note = null;
     status(e.message, true);
     if (S.last) { fillSelects(S.last[0], S.last[1]); S.set = { ...S.last[2] }; }   // keep inputs consistent with what is shown
     if (S.r) renderInputs(e.message);
@@ -524,12 +542,13 @@ show();
   status("Loading the dataset (about 10 s the first time)…");
   try {
     S.meta = await api("/api/meta");
-    S.seasons = S.meta.seasons;
-    const q = new URLSearchParams(location.search), st = S.seasons[q.get("state")] ? q.get("state") : S.meta.state;
+    S.seasons = S.meta.seasons; S.blocked = S.meta.blocked || {};
+    const q = new URLSearchParams(location.search), st = usable(q.get("state")).length ? q.get("state") : S.meta.state;
     for (const [p, k] of [["land", "land_pct"], ["target", "target_pct"], ["band", "band_pct"], ["pulse", "pulse_share"]]) if (q.has(p)) S.set[k] = +q.get(p);
     if (["historical", "band"].includes(q.get("bounds"))) S.set.bounds = q.get("bounds");
     if (YIELD[q.get("yield")]) S.set.yield_method = q.get("yield");
-    fillSelects(st, S.seasons[st].includes(q.get("season")) ? q.get("season") : S.seasons[st].includes(S.meta.season) ? S.meta.season : S.seasons[st][0]);
+    const ok = usable(st);
+    fillSelects(st, ok.includes(q.get("season")) ? q.get("season") : ok.includes(S.meta.season) ? S.meta.season : ok[0]);
     await run();
   } catch (e) { status(e.message, true); }
 })();

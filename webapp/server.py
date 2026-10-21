@@ -83,7 +83,15 @@ def db() -> dict:
             area = win.groupby(["State_Name", "Season"])["Area"].sum()
             seasons = {st: area[st].sort_values(ascending=False).index.tolist()
                        for st in sorted(win["State_Name"].unique())}
-            DB.update(data=data, rep=rep, years=years, seasons=seasons)
+            # seasons with fewer than 2 crops reported in enough years have no LP; the crop count does not depend
+            # on the model inputs, so it is found once here and the browser greys those seasons out
+            blocked = {}
+            for st, ss in seasons.items():
+                for se in ss:
+                    _, coef, _ = solve_scope(oc.filter_scope(win, st, None, se), years)
+                    if len(coef) < 2:
+                        blocked.setdefault(st, []).append(se)
+            DB.update(data=data, rep=rep, years=years, seasons=seasons, blocked=blocked)
         return DB
 
 
@@ -148,7 +156,7 @@ def district_geo(state, names):
 def meta():
     d = db()
     rep = d["rep"]
-    return J(dict(seasons=d["seasons"], state=DEFAULT_STATE, season=DEFAULT_SEASON, years=d["years"],
+    return J(dict(seasons=d["seasons"], blocked=d["blocked"], state=DEFAULT_STATE, season=DEFAULT_SEASON, years=d["years"],
                   cleaning=dict(rows_in=rep.rows_in, rows_out=rep.rows_out,
                                 steps=[dict(step=a, removed=b) for a, b, w in rep.steps if b > 0])))
 

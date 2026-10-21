@@ -37,12 +37,13 @@ The source is the *District-wise, Season-wise Crop Production Statistics* (MoA&F
 | Production = 0 (mostly unreported) | Drop | −3,634 |
 | **Stacked duplicate source.** From line 236,380 the file is a later release: 1997–2015 again, plus 2016–2020, with Production ×100 | Divide by 100; keep one row per record (state, district, year, season, crop), the first release where both exist | −213,888 |
 | Aggregate rows (Total foodgrain, Pulses total, Oilseeds total) | Drop, to avoid double counting | −1,133 |
-| Spelling variants (Paddy, Dry Ginger, …) | Merge | 3,565 renamed |
+| **Same record under two crop spellings** ("Other&nbsp;&nbsp;Rabi pulses" beside "Other Rabi pulses", "Paddy" beside "Rice"), almost always with identical values | Keep the row with the standard name | −3,300 |
+| Remaining spelling variants (Paddy, Dry Ginger, …) | Merge | 265 renamed |
 | Count or bale units (Coconut in nuts; Cotton, Jute and Mesta in bales) | Exclude from pooling | — |
 
-**Result:** 357,224 clean rows. Production is in tonnes; yields now match official figures (rice 1.8–2.8 t/ha). 1997 and 2020 have only partial coverage, so the analysis window is **1998–2019**.
+**Result:** 353,924 clean rows. Production is in tonnes; yields now match official figures (rice 1.8–2.8 t/ha). 1997 and 2020 have only partial coverage, so the analysis window is **1998–2019**.
 
-The two releases are matched on the record (state, district, year, season, crop), not on its values. 2,614 records differ between them, mostly because the later release rounds to the nearest thousand (Anantapur 2012 Arhar/Tur: 56,586 ha vs 56,000 ha), so the first release is kept. Unusable rows (blank, zero or negative) are removed before matching, so a record is lost only when every copy of it is. Each record is counted once, whatever is edited. In the web app, *Data → Check the numbers by hand* shows every coefficient worked out from the yearly totals, down to the CSV lines used (and the unused twin line).
+The two releases are matched on the record (state, district, year, season, crop), not on its values. 2,614 records differ between them, mostly because the later release rounds to the nearest thousand (Anantapur 2012 Arhar/Tur: 56,586 ha vs 56,000 ha), so the first release is kept. Unusable rows (blank, zero or negative) are removed before matching, so a record is lost only when every copy of it is. Each record is counted once, whatever is edited. The app reads a file with one line per record, built from the raw download by `make_clean_data.py` (`run_case_study.py` checks that it cleans to the same records and values), so every line feeds the model. In the web app, *Data → Check the numbers by hand* shows every coefficient worked out from the yearly totals, down to the CSV lines used, and *Look up a CSV line* tells where any line goes or why it is not used.
 
 ![Stacked-source fix](results/fig1_stacked_source_fix.png)
 

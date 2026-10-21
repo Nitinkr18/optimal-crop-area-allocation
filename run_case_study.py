@@ -19,7 +19,9 @@ import or_core as oc  # noqa: E402
 ROOT = Path(__file__).parent
 OUT = ROOT / "results"
 OUT.mkdir(exist_ok=True)
-GOV = ROOT / "Indian Agriculture Crop Production and yield (GOV)" / "Indian_crop_production_yield_dataset.csv"
+DATA = ROOT / "Indian Agriculture Crop Production and yield (GOV)"
+GOV = DATA / "raw" / "Indian_crop_production_yield_dataset_raw.csv.gz"     # the raw download: shows every cleaning step
+CLEAN = DATA / "Indian_crop_production_yield_dataset.csv"                  # one line per record (make_clean_data.py)
 
 STATE, SEASON, YEARS = "Karnataka", "Kharif", (1998, 2019)
 BLUE, ORANGE, GRAY = "#2a78d6", "#eb6834", "#8a8984"
@@ -50,6 +52,15 @@ def main():
     data, rep = oc.clean(df)
     log.append("## Cleaning log\n\n" + md(rep.as_frame(), ",.0f") +
                f"\n\nRows: {rep.rows_in:,} -> {rep.rows_out:,}\n")
+    # the file the app reads must clean to exactly the same records and values
+    c = pd.read_csv(CLEAN, low_memory=False)
+    c_data, c_rep = oc.clean(oc.standardise(c, oc.guess_column_map(c.columns)))
+    a, b = (x.sort_values(oc.RECORD_KEY).reset_index(drop=True) for x in (data, c_data))
+    same = (len(a) == len(b) and a[oc.RECORD_KEY].equals(b[oc.RECORD_KEY])            # same records, values to 1e-12
+            and np.allclose(a[["Area", "Production"]], b[["Area", "Production"]], rtol=1e-12, atol=0))
+    log.append(f"Check: {CLEAN.name} ({c_rep.rows_in:,} lines, one per record) cleans to the same "
+               f"{c_rep.rows_out:,} records with the same values: {same}\n")
+    assert same, "the app's data file differs from the raw download after cleaning; run make_clean_data.py"
 
     # --- stacked-source quirk: pooled yield before vs after reconciliation ---
     raw_d, _ = oc.clean(df, reconcile_stacked=False)

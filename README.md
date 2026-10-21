@@ -20,6 +20,7 @@ The browser opens **<http://127.0.0.1:8000>**. The dataset loads automatically (
 |---|---|
 | `python run_case_study.py` | Reproduces every number and figure in the report (writes to `results/`) |
 | `python generate_synthetic_data.py` | Regenerates the two test files in `sample_data/` |
+| `python make_clean_data.py` | Rebuilds the app's data file (one line per record) from the raw download |
 
 ## The interface
 
@@ -43,15 +44,15 @@ The defaults reproduce the report. The pulse floor is an extra LP constraint (`s
 
 ### Changing the data
 
-Edit `Indian_crop_production_yield_dataset.csv` (change, add or delete rows) and save it while the app runs: it reloads the file within a few seconds, re-solves and shows *Data file changed*. How an edit flows through:
+The app reads `Indian Agriculture Crop Production and yield (GOV)/Indian_crop_production_yield_dataset.csv`: **one line per record** (state, district, year, season, crop), Production in tonnes. Open it in LibreOffice Calc, Numbers, Excel or a text editor, change, add or delete rows, and save it as CSV while the app runs: within about 10 seconds it reloads the file, re-solves and shows *Data file changed*. Saving from LibreOffice Calc leaves every other value exactly as it was (tested on all 358,657 lines).
 
+* *Data → Look up a CSV line* tells you where any line goes: the crop-year total it is summed into, or why it is not used (another state, the edge years 1997/2020, a crop counted in nuts or bales, zero production, …).
 * A crop's coefficients come from its **yearly totals** (sum over districts): y_c = mean of the yearly yields P_t/A_t (or median, or ΣP/ΣA), a_c = smallest yearly area, m_c = largest yearly area, over 1998–2019. *Data → Check the numbers by hand* shows these sums and formulas with the CSV lines behind them.
-* One row moves y_c a little (one district in one of 22 years). It moves a bound only if its year is the crop's smallest or largest year.
-* Crops at a bound keep their hectares when their yield changes a little; the crop between its bounds sets λ*.
-* **The file holds most 1997–2015 records twice**: lines 2–236,379 (first release, tonnes) and again from line 236,380 (later release, Production ×100). The first release is used. To remove a record, delete **both** lines; editing only the unused line changes nothing. The trace table lists both line numbers.
-* Blank, zero or negative values make a row unusable; the other copy of the record is then used. A large typo is kept but listed under *rows far from the crop's usual yield*.
-* Keep the row order: if the file is sorted, units are decided per row from year and yield, which is approximate.
-* The column `yield` in the file is not used; yield is always recomputed as Production ÷ Area.
+* So any change to a used line changes that scope's results: a little for one district in one of 22 years, more if its year is the crop's smallest or largest year (it then moves a bound). Deleting a used line removes it from its year's total.
+* Blank, zero or negative values make a line unusable (it is left out); a large typo is kept and listed under *rows far from the crop's usual yield*.
+* Keep the rows in order and the header unchanged; there is no `yield` column (yield is always Production ÷ Area).
+
+The file is built from the raw download (`raw/Indian_crop_production_yield_dataset_raw.csv.gz`, 575,879 lines) by `python make_clean_data.py`. The raw file holds a second release of the data from line 236,380 (Production ×100, repeating 213,888 records) and lists 3,331 records twice under two spellings of the crop; the script keeps one line per record. `run_case_study.py` starts from the raw file and checks that the app's file cleans to exactly the same records and values.
 
 Map boundaries are built by `python webapp/geo/make_geo.py` from public GeoJSON (states: datta07/INDIAN-SHAPEFILES; districts: geohacker/india, GADM, whose district names match the dataset's era). A few districts created recently, or renamed, have no boundary and appear only in the charts.
 
@@ -68,5 +69,6 @@ Map boundaries are built by `python webapp/geo/make_geo.py` from public GeoJSON 
 ├── results/                       Tables and figures from run_case_study.py
 ├── sample_data/                   Two small synthetic test files (validation in REPORT.md)
 └── Indian Agriculture Crop Production and yield (GOV)/
-    └── Indian_crop_production_yield_dataset.csv   (575,879 rows)
+    ├── Indian_crop_production_yield_dataset.csv   (358,657 lines, one per record: the file the app reads)
+    └── raw/Indian_crop_production_yield_dataset_raw.csv.gz   (the raw download, 575,879 lines)
 ```

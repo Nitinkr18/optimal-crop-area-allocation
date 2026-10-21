@@ -245,6 +245,12 @@ def reconcile_stacked_sources(d: pd.DataFrame, min_share=0.05):
     return d[keep].reset_index(drop=True), info
 
 
+def _has_standard_twin(d, variant):
+    """Rows (renamed from a spelling variant) whose record also has a row that was already under the standard name."""
+    std_keys = pd.MultiIndex.from_frame(d.loc[~variant, RECORD_KEY])
+    return pd.MultiIndex.from_frame(d[RECORD_KEY]).isin(std_keys) & variant.to_numpy()
+
+
 def clean(df: pd.DataFrame, drop_zero_production=True, merge_aliases=True,
           drop_aggregates=True, reconcile_stacked=True) -> tuple[pd.DataFrame, CleaningReport]:
     rep = CleaningReport(rows_in=len(df))
@@ -291,9 +297,15 @@ def clean(df: pd.DataFrame, drop_zero_production=True, merge_aliases=True,
                 "These rows are sums of other rows -> double counting")
 
     if merge_aliases:
-        changed = d["Crop"].isin(CROP_ALIASES.keys()).sum()
+        variant = d["Crop"].isin(CROP_ALIASES.keys())
         d["Crop"] = d["Crop"].replace(CROP_ALIASES)
-        rep.add("Crop-name spelling variants merged", 0, f"{changed} rows renamed (e.g. Paddy -> Rice)")
+        # a record can be in the file under both spellings (e.g. "Other  Rabi pulses" and "Other Rabi pulses"):
+        # keep the row that already had the standard name, so the record is counted once
+        n = len(d)
+        d = d[~_has_standard_twin(d, variant)]
+        rep.add("Same record under two crop spellings", n - len(d),
+                "Kept the row with the standard name (e.g. 'Rice' over 'Paddy'), so the record is counted once")
+        rep.add("Crop-name spelling variants merged", 0, f"{int(variant.sum()) - (n - len(d))} rows renamed (e.g. Paddy -> Rice)")
 
     d["Yield"] = d["Production"] / d["Area"]  # recompute: guarantees Yield = Prod/Area
     rep.rows_out = len(d)

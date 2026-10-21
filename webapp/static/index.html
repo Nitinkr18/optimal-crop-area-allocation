@@ -59,8 +59,8 @@
 
     <h2>Questions</h2>
     <div class="grid2">
-      <div class="card q"><span class="tag">Q1</span><p><b>Maximise output.</b> With a fixed land budget, how many hectares per crop give the most total production?</p></div>
-      <div class="card q"><span class="tag">Q2</span><p><b>Minimise land.</b> To produce at least the historical output, what is the smallest area needed?</p></div>
+      <div class="card q m1"><span class="tag">Q1</span><p><b>Maximise output.</b> With a fixed land budget, how many hectares per crop give the most total production?</p></div>
+      <div class="card q m2"><span class="tag">Q2</span><p><b>Minimise land.</b> To produce at least the historical output, what is the smallest area needed?</p></div>
     </div>
 
     <h2>Headline results <span class="scope" data-scope></span></h2>
@@ -117,21 +117,21 @@
   <!-- Model -------------------------------------------------------------->
   <section class="page" id="model">
     <h1>Model inputs <span class="scope" data-scope></span></h1>
-    <p class="note">Two linear programs share these inputs: <b>Model 1</b> maximises output on the land available,
-      <b>Model 2</b> finds the least land that meets the production target. Change any input and every page re-solves.
-      The defaults reproduce the report.</p>
+    <p class="note">Two linear programs share these inputs: <span class="mtag m1">Model 1</span> maximises output on the land available,
+      <span class="mtag m2">Model 2</span> finds the least land that meets the production target. Change any input and every page re-solves.
+      The defaults reproduce the report. On each slider the tick marks history and the red part has no solution.</p>
 
     <div class="inputs">
-      <div class="card input">
+      <div class="card input m1">
         <div class="in-head"><h3>Land available</h3><span class="in-val" id="vLand"></span></div>
-        <p class="in-desc">Model 1 · total area the crops may use, as % of historical land.</p>
-        <input type="range" id="inLand" min="50" max="150" step="1" value="100">
+        <p class="in-desc"><span class="mtag">Model 1</span>total area the crops may use, as % of historical land.</p>
+        <input type="range" id="inLand" aria-describedby="hLand" min="50" max="150" step="1" value="100">
         <p class="in-hint" id="hLand"></p>
       </div>
-      <div class="card input">
+      <div class="card input m2">
         <div class="in-head"><h3>Production target</h3><span class="in-val" id="vTarget"></span></div>
-        <p class="in-desc">Model 2 · output that must be reached, as % of historical output.</p>
-        <input type="range" id="inTarget" min="50" max="150" step="1" value="100">
+        <p class="in-desc"><span class="mtag">Model 2</span>output that must be reached, as % of historical output.</p>
+        <input type="range" id="inTarget" aria-describedby="hTarget" min="50" max="150" step="1" value="100">
         <p class="in-hint" id="hTarget"></p>
       </div>
       <div class="card input">
@@ -147,7 +147,7 @@
       <div class="card input">
         <div class="in-head"><h3>Minimum land under pulses</h3><span class="in-val" id="vPulse"></span></div>
         <p class="in-desc">Keeps pulses in the plan for nutrition and crop rotation.</p>
-        <input type="range" id="inPulse" min="0" max="60" step="1" value="0">
+        <input type="range" id="inPulse" aria-describedby="hPulse" min="0" max="60" step="1" value="0">
         <p class="in-hint" id="hPulse"></p>
       </div>
       <div class="card input">
@@ -196,8 +196,8 @@
   <section class="page" id="results">
     <h1>Results <span class="scope" data-scope></span></h1>
     <div class="seg" role="tablist">
-      <button type="button" data-model="1" class="on">Model 1 · Max output</button>
-      <button type="button" data-model="2">Model 2 · Min land</button>
+      <button type="button" data-model="1" class="on" aria-selected="true">Model 1 · Max output</button>
+      <button type="button" data-model="2" aria-selected="false">Model 2 · Min land</button>
     </div>
     <div class="kpis" id="kpiModel"></div>
     <p class="note" id="modelNote"></p>

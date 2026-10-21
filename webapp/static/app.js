@@ -6,6 +6,8 @@ const S = { seasons: {}, r: null, india: {}, geo: null, model: 1, last: null, cr
 const isDefault = (st) => Object.keys(DEF).every((k) => st[k] === DEF[k]);
 const indiaKey = (season) => `${season}|${JSON.stringify(S.set)}`;
 const INK = "#111", ACC = "#2f6f4e", ACC_L = "#9fc5ad", GREY = "#c9c9c9", MUTED = "#8a8a8a";
+const SOIL = "#8a5a22";                                   // Model 2 (land) colour; Model 1 (output) is ACC
+const MODEL_COL = (m) => (m === 2 ? SOIL : ACC);
 const SCALE = [[0, "#eef5f0"], [0.5, "#7fae90"], [1, "#1d4d34"]];
 const TREND = ["#1d4d34", "#2f6f4e", "#5f9676", "#9fc5ad", "#8a8a8a"];
 const FONT = getComputedStyle(document.body).fontFamily;
@@ -30,22 +32,30 @@ async function api(path, body) {
   return j;
 }
 
-// KPI tiles; numeric values count up when they change
-function kpis(sel, items) {
-  $(sel).innerHTML = items.map(([k, v, s, good]) =>
-    `<div class="kpi"><div class="k">${k}</div><div class="v${good ? " up" : ""}" data-v="${typeof v === "object" ? v.n : ""}">${typeof v === "object" ? v.f(0) : v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`).join("");
-  items.forEach(([, v], i) => {
+// KPI tiles. A number moves from the value shown last time to the new one, so a re-solve shows which way it went;
+// a tile whose value changed under new inputs (same state and season) flashes once. `m` colours the tile by model.
+const PREV = {};
+function kpis(sel, items, scope = "") {
+  $(sel).innerHTML = items.map(([k, v, s, good, m]) =>
+    `<div class="kpi${m ? " m" + m : ""}"><div class="k">${k}</div><div class="v${good ? " up" : ""}">${typeof v === "object" ? v.f(PREV[`${sel}|${scope}|${k}`] ?? 0) : v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`).join("");
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  items.forEach(([k, v], i) => {
     if (typeof v !== "object" || v.n == null) return;
-    const el = $(sel).children[i].querySelector(".v"), t0 = performance.now();
-    const step = (t) => { const p = Math.min(1, (t - t0) / 600), e = 1 - (1 - p) ** 3; el.textContent = v.f(v.n * e); if (p < 1) requestAnimationFrame(step); };
+    const key = `${sel}|${scope}|${k}`, seen = key in PREV, from = PREV[key] ?? 0, to = v.n, tile = $(sel).children[i], el = tile.querySelector(".v");
+    PREV[key] = to;
+    if (S.flash && seen && Math.abs(to - from) > 1e-9 * Math.max(1, Math.abs(to))) tile.classList.add("changed");
+    if (still) { el.textContent = v.f(to); return; }
+    const t0 = performance.now();
+    const step = (t) => { const p = Math.min(1, (t - t0) / 600), e = 1 - (1 - p) ** 3; el.textContent = v.f(from + (to - from) * e); if (p < 1) requestAnimationFrame(step); };
     requestAnimationFrame(step);
   });
 }
 const N = (n, f) => ({ n, f });
 
 function table(cols, rows) {
-  return `<table><thead><tr>${cols.map((c) => `<th class="${c.r ? "r" : ""}">${c.label}</th>`).join("")}</tr></thead><tbody>${
-    rows.map((row) => `<tr>${cols.map((c) => `<td class="${c.r ? "r" : ""}">${c.f ? c.f(row[c.k], row) : esc(row[c.k] ?? "–")}</td>`).join("")}</tr>`).join("")
+  const cls = (c) => [c.r ? "r" : "", c.cls || ""].join(" ").trim();
+  return `<table><thead><tr>${cols.map((c) => `<th class="${cls(c)}">${c.label}</th>`).join("")}</tr></thead><tbody>${
+    rows.map((row) => `<tr>${cols.map((c) => `<td class="${cls(c)}">${c.f ? c.f(row[c.k], row) : esc(row[c.k] ?? "–")}</td>`).join("")}</tr>`).join("")
   }</tbody></table>`;
 }
 
@@ -115,7 +125,8 @@ $("#selState").onchange = () => selectState($("#selState").value);
 $("#selSeason").onchange = () => run();
 $$("[data-model]").forEach((b) => b.onclick = () => {
   S.model = +b.dataset.model;
-  $$("[data-model]").forEach((x) => x.classList.toggle("on", x === b));
+  document.body.dataset.model = S.model;                       // Results page fades to this model's colour
+  $$("[data-model]").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-selected", x === b); });
   renderModel(); draw("results");
 });
 
@@ -130,11 +141,13 @@ async function run() {
       S.india[indiaKey(season)] ? Promise.resolve(S.india[indiaKey(season)]) : api("/api/india", { season, settings }),
       !custom || S.base[bkey] ? Promise.resolve(S.base[bkey]) : api("/api/run", { state, season }),
     ]);
+    S.flash = !!S.last && S.last[0] === state && S.last[1] === season;   // only input changes flash, not a new state
     S.r = r; S.india[indiaKey(season)] = ind; S.last = [state, season, settings];
     S.base[bkey] = custom ? base : r;
     render();
     status(`${r.coef.length} crops · ${r.years[0]}–${r.years[1]}`);
     draw(current());
+    S.flash = false;
   } catch (e) {
     status(e.message, true);
     if (S.last) { fillSelects(S.last[0], S.last[1]); S.set = { ...S.last[2] }; }   // keep inputs consistent with what is shown
@@ -164,6 +177,7 @@ function renderInputs(err = "") {
   $("#hYield").textContent = { mean: "Average of yearly yields (as in the report).", median: "Middle year; ignores unusual years.", weighted: "Total production ÷ total area." }[st.yield_method];
   const msg = $("#hLand").closest(".inputs");
   msg.querySelectorAll(".in-hint").forEach((h) => h.classList.remove("warn"));
+  feasibility(lim);
   if (err) { const h = /Model 1/.test(err) && !/pulses/.test(err) ? "#hLand" : /Model 2/.test(err) && !/pulses/.test(err) ? "#hTarget" : "#hPulse";
     $(h).textContent = err; $(h).classList.add("warn"); }
   $("#activeList").innerHTML = [
@@ -173,6 +187,30 @@ function renderInputs(err = "") {
     `${YIELD[st.yield_method].toLowerCase()} yields`,
   ].map((x) => `<li>${x}</li>`).join("");
   $("#customBadge").classList.toggle("hidden", isDefault(st));
+}
+// Where each slider has a solution, from the limits of the last solve. The track shows that zone with a tick at
+// history; dragging outside it turns the card to the warning colour before the LP is even run.
+const FEAS = {
+  inLand: { zone: (l) => [l.land_min_pct, Infinity], mark: () => 100,
+    why: (v, l) => `${v}% is below the ${fmt(l.land_min_pct)}% the crops' lower limits need: Model 1 has no solution.` },
+  inTarget: { zone: (l) => [-Infinity, l.target_max_pct], mark: () => 100,
+    why: (v, l) => `${v}% is above the ${fmt(l.target_max_pct)}% reachable with every crop at its upper limit: Model 2 has no solution.` },
+  inPulse: { zone: (l) => [-Infinity, l.pulse_max_pct], mark: (l) => l.pulse_hist_pct,
+    why: (v, l) => `${v}% is above the about ${fmt(l.pulse_max_pct)}% possible within the area limits: no solution.` },
+};
+function feasibility(lim) {
+  for (const [id, f] of Object.entries(FEAS)) {
+    const el = $("#" + id), card = el.closest(".input");
+    if (el.disabled) { el.style.removeProperty("--track"); card.classList.remove("bad"); continue; }
+    const lo = +el.min, hi = +el.max, v = +el.value, [a, b] = f.zone(lim), m = f.mark(lim);
+    const at = (x, d = 0) => `calc(8px + (100% - 16px) * ${Math.max(0, Math.min(1, (x - lo) / (hi - lo)))} + ${d}px)`;   // thumb centre
+    el.style.setProperty("--track",
+      `linear-gradient(to right, transparent ${at(m, -1)}, var(--ink) ${at(m, -1)} ${at(m, 1)}, transparent ${at(m, 1)}),` +
+      `linear-gradient(to right, var(--warn-mid) ${at(a)}, var(--acc-mid) ${at(a)} ${at(b)}, var(--warn-mid) ${at(b)})`);
+    const bad = v !== 0 && (v < a || v > b);
+    card.classList.toggle("bad", bad);
+    if (bad) { const h = card.querySelector(".in-hint"); h.textContent = f.why(v, lim); h.classList.add("warn"); }
+  }
 }
 function setInput(k, v) { S.set[k] = v; renderInputs(); run(); }
 for (const [id, k] of [["#inLand", "land_pct"], ["#inTarget", "target_pct"], ["#inBand", "band_pct"], ["#inPulse", "pulse_share"]]) {
@@ -189,8 +227,8 @@ function renderEffect() {
     return 100 * a.filter((d) => res.pulse_crops.includes(d.Crop)).reduce((t, d) => t + d.x_opt, 0) / tot; };
   const was = (v) => (custom ? `default ${v}` : "default inputs");
   kpis("#kpiEffect", [
-    ["Model 1 · output vs history", N(r.opt1.gain_pct, (x) => pct(x)), was(pct(b.opt1.gain_pct)), r.opt1.gain_pct > 0],
-    ["Model 2 · land vs history", N(-r.opt2.saving_pct, (x) => pct(x)), was(pct(-b.opt2.saving_pct)), r.opt2.saving_pct > 0],
+    ["Model 1 · output vs history", N(r.opt1.gain_pct, (x) => pct(x)), was(pct(b.opt1.gain_pct)), r.opt1.gain_pct > 0, 1],
+    ["Model 2 · land vs history", N(-r.opt2.saving_pct, (x) => pct(x)), was(pct(-b.opt2.saving_pct)), r.opt2.saving_pct > 0, 2],
     ["Value of one more hectare", N(r.opt1.lam, (x) => fmt(x, 2) + " t"), was(fmt(b.opt1.lam, 2) + " t")],
     ["Pulses in Model 1 plan", r.limits.has_pulses ? N(pulseShare(r), (x) => fmt(x, 1) + "%") : "–", r.limits.has_pulses ? was(fmt(pulseShare(b), 1) + "%") : "no pulses"],
   ]);
@@ -208,8 +246,8 @@ function render() {
   $("#agree").innerHTML = gap != null ? `This run: both solvers agree to ${gap < 1e-9 ? "&lt; 10⁻⁹" : gap.toExponential(1)} (relative).` : "";
 
   kpis("#kpiOverview", [
-    ["Output on the same land", N(o1.gain_pct, (x) => pct(x)), "Model 1", true],
-    ["Land for the same output", N(-o2.saving_pct, (x) => pct(x)), "Model 2", true],
+    ["Output on the same land", N(o1.gain_pct, (x) => pct(x)), "Model 1", true, 1],
+    ["Land for the same output", N(-o2.saving_pct, (x) => pct(x)), "Model 2", true, 2],
     ["Crops in the LP", N(r.coef.length, (x) => fmt(x)), `${r.excluded.length} excluded for units`],
     ["Value of one more hectare", N(o1.lam, (x) => fmt(x, 2) + " t"), "shadow price λ*"],
   ]);
@@ -246,11 +284,11 @@ function renderModel() {
   const r = S.r, o1 = r.opt1, o2 = r.opt2, uh = " (t)";
   if (S.model === 1) {
     kpis("#kpiModel", [["Land available (ha)", N(o1.L, (x) => fmt(x)), `${S.set.land_pct}% of history`], [`Historical output${uh}`, N(o1.D_hist, (x) => fmt(x))],
-      [`Optimal output${uh}`, N(o1.Z, (x) => fmt(x))], ["Change vs history", N(o1.gain_pct, (x) => pct(x)), "", o1.gain_pct > 0]]);
+      [`Optimal output${uh}`, N(o1.Z, (x) => fmt(x))], ["Change vs history", N(o1.gain_pct, (x) => pct(x)), "", o1.gain_pct > 0]], "m1");
     $("#modelNote").textContent = `Shadow price of land λ* = ${fmt(o1.lam, 4)} t: one more hectare adds this much output.`;
   } else {
     kpis("#kpiModel", [[`Output target${uh}`, N(o2.D, (x) => fmt(x)), `${S.set.target_pct}% of history`], ["Historical land (ha)", N(o2.L_hist, (x) => fmt(x))],
-      ["Minimum land (ha)", N(o2.land, (x) => fmt(x))], ["Change vs history", N(-o2.saving_pct, (x) => pct(x)), "", o2.saving_pct > 0]]);
+      ["Minimum land (ha)", N(o2.land, (x) => fmt(x))], ["Change vs history", N(-o2.saving_pct, (x) => pct(x)), "", o2.saving_pct > 0]], "m2");
     $("#modelNote").textContent = o2.inv_lam != null
       ? `Duality check: μ* = ${fmt(o2.mu, 4)} ha per tonne, and 1/λ* at that land = ${fmt(o2.inv_lam, 4)}.` +
         (Math.abs(o2.mu - o2.inv_lam) < 1e-6 * o2.mu ? " They match." : "") : "";
@@ -264,8 +302,8 @@ function renderModel() {
     { k: "a_c", label: "Min a<sub>c</sub>", r: 1, f: (v) => fmt(v) },
     { k: "m_c", label: "Max m<sub>c</sub>", r: 1, f: (v) => fmt(v) },
     { k: "hist_area", label: "Historical", r: 1, f: (v) => fmt(v) },
-    { k: "x_opt", label: "Model 1", r: 1, f: (v) => (S.model === 1 ? `<b>${fmt(v)}</b>` : fmt(v)) },
-    { k: "Crop", label: "Model 2", r: 1, f: (v) => (S.model === 2 ? `<b>${fmt(x2[v])}</b>` : fmt(x2[v])) },
+    { k: "x_opt", label: "Model 1", r: 1, cls: S.model === 1 ? "act" : "", f: (v) => (S.model === 1 ? `<b>${fmt(v)}</b>` : fmt(v)) },
+    { k: "Crop", label: "Model 2", r: 1, cls: S.model === 2 ? "act" : "", f: (v) => (S.model === 2 ? `<b>${fmt(x2[v])}</b>` : fmt(x2[v])) },
     { k: "bound_status", label: "Decision", f: (v, row) => (S.model === 1 ? st(v) : s2[row.Crop]) },
   ], o1.alloc);
 }
@@ -335,21 +373,21 @@ const CHARTS = {
       { showlegend: false, yaxis: { title: "yield (t/ha)" }, xaxis: { tickangle: -40 } }, 380);
   },
   results(r) {
-    const o = S.model === 1 ? r.opt1 : r.opt2, label = `Model ${S.model}`;
+    const o = S.model === 1 ? r.opt1 : r.opt2, label = `Model ${S.model}`, MC = MODEL_COL(S.model);
     const a = [...o.alloc].sort((p, q) => p.y_c - q.y_c), h = Math.max(320, 22 * a.length + 80);
     plot("#chAlloc", [
       { type: "bar", orientation: "h", name: "Historical", y: a.map((d) => d.Crop), x: a.map((d) => d.hist_area), marker: { color: GREY },
         hovertemplate: "%{y}: %{x:,.0f} ha<extra>historical</extra>" },
-      { type: "bar", orientation: "h", name: label, y: a.map((d) => d.Crop), x: a.map((d) => d.x_opt), marker: { color: ACC },
+      { type: "bar", orientation: "h", name: label, y: a.map((d) => d.Crop), x: a.map((d) => d.x_opt), marker: { color: MC },
         hovertemplate: `%{y}: %{x:,.0f} ha<extra>${label}</extra>` },
     ], { barmode: "group", xaxis: { title: "hectares" } }, h);
     plot("#chChange", [{ type: "bar", orientation: "h", y: a.map((d) => d.Crop), x: a.map((d) => d.change_ha),
-      marker: { color: a.map((d) => (d.change_ha >= 0 ? ACC : GREY)) }, hovertemplate: "%{y}: %{x:+,.0f} ha<extra></extra>" }],
-      { showlegend: false, xaxis: { title: "hectares gained (green) or given up (grey)", zeroline: true, zerolinecolor: INK } }, h);
+      marker: { color: a.map((d) => (d.change_ha >= 0 ? MC : GREY)) }, hovertemplate: "%{y}: %{x:+,.0f} ha<extra></extra>" }],
+      { showlegend: false, xaxis: { title: `hectares gained (${S.model === 1 ? "green" : "brown"}) or given up (grey)`, zeroline: true, zerolinecolor: INK } }, h);
     const w = [...o.alloc].sort((p, q) => q.y_c - p.y_c).filter((d) => Math.abs(d.y_c * d.change_ha) > 1e-6);
     plot("#chOutput", [{ type: "waterfall", orientation: "v", x: [...w.map((d) => d.Crop), "Total"],
       y: [...w.map((d) => d.y_c * d.change_ha), 0], measure: [...w.map(() => "relative"), "total"],
-      increasing: { marker: { color: ACC } }, decreasing: { marker: { color: GREY } }, totals: { marker: { color: INK } },
+      increasing: { marker: { color: MC } }, decreasing: { marker: { color: GREY } }, totals: { marker: { color: INK } },
       connector: { line: { color: "#ddd", width: 1 } }, hovertemplate: "%{x}: %{y:+,.0f} t<extra></extra>" }],
       { showlegend: false, yaxis: { title: "output change (t)" }, xaxis: { tickangle: -40 }, transition: { duration: 0 } }, 380);
   },
@@ -378,7 +416,7 @@ const CHARTS = {
       ["Rank in India", rank ? `${rank} of ${rows.length}` : "–", `states growing ${crop} in ${r.season}`],
       ["Model 1 decision", DECISION(a.bound_status), a.bound_status.startsWith("basic") ? "takes the remaining land" : "bound reached"],
       ["Change in area", N(a.change_ha, (x) => (x >= 0 ? "+" : "−") + fmt(Math.abs(x)) + " ha"), `${pct(100 * a.change_ha / a.hist_area)} vs history`, a.change_ha > 0],
-    ]);
+    ], crop);
     $("#cropMapNote").textContent = `${crop} · ${r.season}`;
     map("#chCropMap", S.geo, rows.map((x) => x.state), rows.map((x) => x.yield_),
       rows.map((x) => `<b>${x.state}</b><br>${crop}: ${fmt(x.yield_, 2)} t/ha<br>${big(x.area)} ha per year`),
@@ -405,7 +443,7 @@ const CHARTS = {
       { type: "scatter", mode: "lines+markers", name: "Model 1: output gain %", x: r.band.map((b) => b.band_pct), y: r.band.map((b) => b.output_gain_pct),
         line: { color: ACC, width: 2.5 }, marker: { size: 7 }, hovertemplate: "±%{x}%: %{y:+.1f}%<extra></extra>" },
       { type: "scatter", mode: "lines+markers", name: "Model 2: land saved %", x: r.band.map((b) => b.band_pct), y: r.band.map((b) => b.land_saving_pct),
-        line: { color: MUTED, width: 2.5, dash: "dash" }, marker: { size: 7 }, hovertemplate: "±%{x}%: %{y:.1f}%<extra></extra>" },
+        line: { color: SOIL, width: 2.5, dash: "dash" }, marker: { size: 7 }, hovertemplate: "±%{x}%: %{y:.1f}%<extra></extra>" },
     ], { xaxis: { title: "each crop may change by ±p% of its average area", ticksuffix: "%" }, yaxis: { title: "%" } }, 300);
   },
   districts(r) {
@@ -424,7 +462,7 @@ const CHARTS = {
     }
     plot("#chDist", [
       { type: "bar", orientation: "h", name: "Output gain % (Model 1)", y: d.map((x) => title(x.District)), x: d.map((x) => x.output_gain_pct), marker: { color: ACC } },
-      { type: "bar", orientation: "h", name: "Land saved % (Model 2)", y: d.map((x) => title(x.District)), x: d.map((x) => x.land_saving_pct), marker: { color: ACC_L } },
+      { type: "bar", orientation: "h", name: "Land saved % (Model 2)", y: d.map((x) => title(x.District)), x: d.map((x) => x.land_saving_pct), marker: { color: SOIL } },
     ], { barmode: "group", xaxis: { title: "%" } }, Math.max(420, 22 * d.length + 80));
     plot("#chDistScatter", [{ type: "scatter", mode: "markers", x: d.map((x) => x.crops), y: d.map((x) => x.output_gain_pct),
       text: d.map((x) => title(x.District)), marker: { color: ACC, size: 10, opacity: 0.75, line: { color: "#fff", width: 1 } },

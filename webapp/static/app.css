@@ -1,4 +1,13 @@
+/* --acc is registered so a change of model fades from one colour to the other */
+@property --acc { syntax: "<color>"; inherits: true; initial-value: #2f6f4e; }
+@property --acc-soft { syntax: "<color>"; inherits: true; initial-value: #e8f1eb; }
+@property --acc-mid { syntax: "<color>"; inherits: true; initial-value: #b9d4c3; }
 :root {
+  /* each model keeps one colour everywhere: Model 1 = output (green), Model 2 = land (soil) */
+  --m1: #2f6f4e; --m1-soft: #e8f1eb; --m1-mid: #b9d4c3;
+  --m2: #8a5a22; --m2-soft: #f5ecdf; --m2-mid: #e0c7a3;
+  --warn: #b4462a; --warn-soft: #f8e1d8; --warn-mid: #eab5a3;
+  --acc-mid: var(--m1-mid);
   --ink: #111;
   --text: #2b2b2b;
   --muted: #6b6b6b;
@@ -157,7 +166,17 @@ select { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var
 .in-desc { font-size: 13px; color: var(--muted); }
 .in-hint { font-size: 12px; color: var(--muted); min-height: 1em; }
 .in-hint.warn { color: #9a3b1b; }
-input[type=range] { width: 100%; accent-color: var(--acc); cursor: pointer; }
+/* range track: --track is painted by app.js with the zone where the LP has a solution and a tick at history */
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 20px; margin: 0; background: transparent; cursor: pointer; }
+input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--track, var(--line)); }
+input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--track, var(--line)); }
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px; margin-top: -5px; border-radius: 50%;
+  background: var(--acc); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--acc);
+}
+input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--acc); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--acc); }
+input[type=range]:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; border-radius: 4px; }
+input[type=range]:disabled { cursor: default; opacity: .5; }
 .seg.small { margin: 0; }
 .seg.small button { font-size: 13px; padding: 5px 10px; }
 .active { font-size: 13px; padding-left: 18px; margin: 0; flex: 1; }
@@ -165,3 +184,25 @@ input[type=range] { width: 100%; accent-color: var(--acc); cursor: pointer; }
 .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--acc-soft); color: var(--acc); text-decoration: none; font-weight: 600; }
 @media (max-width: 1100px) { .inputs { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .inputs { grid-template-columns: 1fr; } }
+
+/* model colours: anything tagged .m2 (or the Results page while Model 2 is shown) uses the land colour */
+.m1 { --acc: var(--m1); --acc-soft: var(--m1-soft); --acc-mid: var(--m1-mid); }
+.m2 { --acc: var(--m2); --acc-soft: var(--m2-soft); --acc-mid: var(--m2-mid); }
+#results { transition: --acc .5s ease, --acc-soft .5s ease, --acc-mid .5s ease; }
+body[data-model="2"] #results { --acc: var(--m2); --acc-soft: var(--m2-soft); --acc-mid: var(--m2-mid); }
+.mtag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em; padding: 0 7px; margin-right: 4px;
+  border-radius: 4px; background: var(--acc-soft); color: var(--acc); }
+td.act, th.act { background: var(--acc-soft); }
+
+/* a slider dragged outside the zone where the LP has a solution turns the card to the warning colour */
+.input.bad { --acc: var(--warn); --acc-soft: var(--warn-soft); border-color: var(--warn-mid); }
+.input { transition: --acc .25s ease, --acc-soft .25s ease, border-color .25s ease; }
+.in-hint.warn, .input.bad .in-hint.live { color: var(--warn); }
+
+/* a KPI whose value changed after a re-solve flashes once in its model's colour */
+.kpi.changed { animation: changed 1.4s ease-out; }
+@keyframes changed { from { background: var(--acc-soft); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .kpi.changed, .page.on { animation: none; }
+  #results, .input { transition: none; }
+}

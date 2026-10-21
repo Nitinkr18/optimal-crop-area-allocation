@@ -325,7 +325,7 @@ function render() {
     table([{ k: "step", label: "Removed (whole dataset)" }, { k: "removed", label: "Rows", r: 1, f: (v) => "−" + fmt(v) }], c.steps.filter((s) => s.removed > 0));
   $("#dataFile").textContent = `${r.data.file} · saved ${when(r.data.modified)}`;
   $("#dataRows").textContent = `${fmt(c.rows_in)} lines read, ${fmt(c.rows_out)} records used`;
-  $("#dataDup").textContent = dup ? dup.note : "–";
+  $("#dataDup").textContent = dup && dup.removed ? dup.note : "None: one line per record (built from the raw download by make_clean_data.py)";
   const typo = r.unusual.filter((u) => u.yield_ / u.median > 100);   // droughts push yields down, unit slips push them up
   $("#unusual").classList.toggle("hidden", !r.unusual.length);
   $("#unusual").innerHTML = r.unusual.length ? `<details class="lines${typo.length ? " alert" : ""}"${typo.length ? " open" : ""}><summary>${fmt(r.unusual_total)} row${r.unusual_total > 1 ? "s" : ""}
@@ -469,6 +469,69 @@ async function renderTrace() {
     { k: "line", label: "Note", f: (v, row) => [row.divided ? `÷${t.factor} (second release)` : "", row.twin ? `also on line ${fmt(row.twin)}, not used` : "",
       odd.has(v) ? `<span class="flag">yield ${fmt(row.prod / row.area, 3)} t/ha, far from usual</span>` : ""].filter(Boolean).join(" · ") },
   ], t.lines);
+  const L = S.pickLine;
+  if (L && L.crop === crop && L.state === r.state && L.season === r.season) {
+    S.pickLine = null;
+    $$("#traceYears tbody tr").forEach((tr) => tr.classList.toggle("pick", tr.cells[0].textContent.startsWith(String(L.year))));
+    $("#traceLines").open = true;
+    const row = [...$$("#traceLines tbody tr")].find((tr) => tr.cells[0].textContent === fmt(L.line));
+    if (row) { row.classList.add("pick"); row.scrollIntoView({ block: "center" }); }
+  }
+}
+
+// one line of the CSV: where it ends up, or why it is not used
+$("#lineForm").onsubmit = (e) => { e.preventDefault(); if ($("#lineNo").value) lookupLine(+$("#lineNo").value); };
+async function lookupLine(n) {
+  const out = $("#lineOut");
+  out.classList.remove("hidden"); out.textContent = "Looking up…";
+  try {
+    const L = await api(`/api/line?n=${n}&yield_method=${S.set.yield_method}`);
+    const rec = `<b>Line ${fmt(L.line)}</b>: ${esc(L.state)} · ${esc(title(L.district))} · ${L.year} · ${esc(L.season)} · ${esc(L.crop)} ·
+      area ${L.area == null ? "blank" : fmt(L.area) + " ha"} · production ${L.prod == null ? "blank" : fmt(L.prod, 1) + " t"}`;
+    if (!L.used) { out.innerHTML = `${rec}<br><span class="no">Not used</span>: ${esc(L.why)}.`; return; }
+    const here = L.state === S.r.state && L.season === S.r.season;
+    out.innerHTML = `${rec}<br><span class="ok">Used</span>: it is one of the lines summed into ${esc(L.crop)}'s ${L.year} total
+      (A<sub>t</sub> = ${fmt(L.year_area)} ha, P<sub>t</sub> = ${fmt(L.year_prod, 1)} t), and that year's yield P<sub>t</sub>/A<sub>t</sub> is one of the
+      ${L.n_years} averaged into y<sub>c</sub>${L.role ? `; ${L.year} is ${L.role}` : ""}. Changing it changes the results for
+      ${esc(L.state)} · ${esc(L.season)}${here ? " (shown now)" : ""}.<br>
+      <button type="button" class="btn" id="lineGo">${here ? `Show ${esc(L.crop)} ${L.year} below` : `Open ${esc(L.state)} · ${esc(L.season)} and show it`}</button>`;
+    $("#lineGo").onclick = async () => {
+      S.pickLine = L;
+      if (!here) { fillSelects(L.state, L.season); await run(); }
+      $("#selTrace").value = L.crop;
+      await renderTrace();
+    };
+  } catch (err) { out.innerHTML = `<span class="no">${esc(err.message)}</span>`; }
+}
+
+// After the data file changes: every coefficient and result of the shown scope that moved, before → after, with
+// enough decimals to see even a tiny change (one tonne in one district-year moves y_c by about 1e-7).
+function num(a, b, unit = "") {
+  const d = b - a, dec = d === 0 ? 2 : Math.min(10, Math.max(2, Math.ceil(-Math.log10(Math.abs(d))) + 1));
+  const f = (x) => Number(x).toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const sd = Math.abs(d) >= 0.01 ? f(Math.abs(d)) : Math.abs(d).toExponential(2).replace(/e([+-])(\d+)/, (_, s, e) => `×10${s === "-" ? "⁻" : ""}${[...e].map((c) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[c]).join("")}`);
+  return `${f(a)} → ${f(b)}${unit} <span class="d">(${d >= 0 ? "+" : "−"}${sd})</span>`;
+}
+function showChanges(a, b) {
+  const box = $("#changes"), moved = (x, y) => x !== y && !(Math.abs(x - y) <= 1e-12 * Math.max(1, Math.abs(x)));
+  if (!a || a.state !== b.state || a.season !== b.season) return box.classList.add("hidden");
+  const ca = Object.fromEntries(a.coef.map((c) => [c.Crop, c])), cb = Object.fromEntries(b.coef.map((c) => [c.Crop, c]));
+  const items = [];
+  for (const crop of new Set([...Object.keys(ca), ...Object.keys(cb)])) {
+    if (!ca[crop] || !cb[crop]) { items.push(`<b>${esc(crop)}</b> ${cb[crop] ? "now enters" : "leaves"} the LP`); continue; }
+    for (const [k, label, u] of [["y_c", "y<sub>c</sub>", " t/ha"], ["a_c", "a<sub>c</sub>", " ha"], ["m_c", "m<sub>c</sub>", " ha"], ["hist_area", "h<sub>c</sub>", " ha"]])
+      if (moved(ca[crop][k], cb[crop][k])) items.push(`<b>${esc(crop)}</b> ${label}: ${num(ca[crop][k], cb[crop][k], u)}`);
+  }
+  for (const [label, x, y, u] of [["Model 1 optimal output Z*", a.opt1.Z, b.opt1.Z, " t"], ["Historical output", a.opt1.D_hist, b.opt1.D_hist, " t"],
+    ["Historical land", a.opt1.L_hist, b.opt1.L_hist, " ha"], ["Model 1 output gain", a.opt1.gain_pct, b.opt1.gain_pct, "%"],
+    ["Model 2 minimum land", a.opt2.land, b.opt2.land, " ha"], ["Model 2 land saved", a.opt2.saving_pct, b.opt2.saving_pct, "%"], ["λ*", a.opt1.lam, b.opt1.lam, " t/ha"]])
+    if (moved(x, y)) items.push(`${label}: ${num(x, y, u)}`);
+  box.classList.remove("hidden");
+  box.classList.toggle("none", !items.length);
+  box.innerHTML = `<button type="button" class="x" aria-label="Close" onclick="this.parentNode.classList.add('hidden')">×</button>` + (items.length
+    ? `<h3>What the edit changed in ${esc(b.state)} · ${esc(b.season)}</h3><ul>${items.map((x) => `<li>${x}</li>`).join("")}</ul>`
+    : `<h3>Nothing in ${esc(b.state)} · ${esc(b.season)} changed</h3>The edited lines feed another state, season or year, or a crop outside the LP.
+       <i>Data → Look up a CSV line</i> shows where a line goes.`);
 }
 
 // ------------------------------------------------------------------ the data file can be edited while the app runs
@@ -489,7 +552,9 @@ async function checkData() {
       const st = usable($("#selState").value).length ? $("#selState").value : m.state, ok = usable(st);
       fillSelects(st, ok.includes($("#selSeason").value) ? $("#selSeason").value : ok[0]);
       S.note = `Data file changed (saved ${when(m.data.modified)}): re-solved with the edited data.`;
+      const before = S.r;
       await run();
+      if (S.r !== before) showChanges(before, S.r);
     } else if (m.data.error) { S.meta.data.version = v.version; status(m.data.error, true); }
   } catch (e) { /* server busy or restarting: try again next time */ } finally { S.checking = false; if (dimmed) document.body.classList.remove("loading"); }
 }

@@ -43,6 +43,7 @@
     <a class="badge hidden" id="customBadge" href="#model" title="Model inputs differ from the defaults">Custom inputs</a>
     <span class="status" id="status"></span>
   </header>
+  <section class="changes hidden" id="changes" aria-live="polite"></section>
 
   <!-- Overview ----------------------------------------------------------->
   <section class="page" id="overview">
@@ -108,6 +109,11 @@
     <h2>Check the numbers by hand</h2>
     <p class="note">Every coefficient the LP uses for one crop, worked out from the yearly totals, down to the lines of the CSV
       they come from. Edit the CSV and save it: the app reloads it within a few seconds and re-solves.</p>
+    <form class="lookup" id="lineForm">
+      <label class="field">Look up a CSV line <input type="number" id="lineNo" min="2" step="1" placeholder="e.g. 84279" inputmode="numeric"></label>
+      <button type="submit" class="btn">Look up</button>
+    </form>
+    <div class="card lookup-out hidden" id="lineOut" aria-live="polite"></div>
     <label class="field trace-pick">Crop <select id="selTrace"></select></label>
     <div class="grid2 trace">
       <div class="card math-card" id="traceMath"></div>

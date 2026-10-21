@@ -93,7 +93,8 @@ def _settled_stamp():
 def _load() -> dict:
     raw = pd.read_csv(GOV, low_memory=False)
     raw["Source_Row"] = raw.index + 2                       # line number in the CSV (line 1 is the header)
-    data, rep = oc.clean(oc.standardise(raw, oc.guess_column_map(raw.columns)))
+    lines = oc.standardise(raw, oc.guess_column_map(raw.columns))
+    data, rep = oc.clean(lines)
     rpy = data.groupby("Crop_Year").size()
     full = rpy[rpy >= 0.65 * rpy.median()].index           # drop partial years (1997, 2020)
     years = (int(full.min()), int(full.max()))
@@ -103,7 +104,8 @@ def _load() -> dict:
                for st in sorted(win["State_Name"].unique())}
     # seasons with fewer than 2 crops reported in enough years have no LP; the crop count does not depend
     # on the model inputs, so it is found once here and the browser greys those seasons out
-    return dict(data=data, rep=rep, years=years, seasons=seasons, blocked=blocked_scopes(win, years))
+    return dict(data=data, rep=rep, years=years, seasons=seasons, blocked=blocked_scopes(win, years), lines=lines,
+                used_at=pd.Series(np.arange(len(data)), index=data["Source_Row"].to_numpy()))
 
 
 def blocked_scopes(win, years):
@@ -312,6 +314,68 @@ def trace(state: str, season: str, crop: str, yield_method: str = "mean"):
     ))
 
 
+def _why_dropped(n, r, lines, rep):
+    """Why the cleaning step leaves line n out (mirrors or_core.clean, in the same order)."""
+    if pd.isna(r.Area) or pd.isna(r.Production) or r.Crop in ("", "nan"):
+        return "Area or Production is blank or not a number, so the line cannot give a yield"
+    same = lines[(lines["Source_Row"] < n) & (lines["Area"] == r.Area) & (lines["Production"] == r.Production)
+                 & (lines["Crop"] == r.Crop) & (lines["Crop_Year"] == r.Crop_Year) & (lines["State_Name"] == r.State_Name)
+                 & (lines["District_Name"] == r.District_Name) & (lines["Season"] == r.Season)]
+    if len(same):
+        return f"it is an exact copy of line {int(same['Source_Row'].iloc[0]):,}, which is used instead"
+    if r.Area <= 0:
+        return "Area is zero or negative, so yield = Production ÷ Area is undefined"
+    if r.Production <= 0:
+        return "Production is zero or negative (usually unreported), so it is left out rather than pulling the average to 0"
+    if r.Crop in oc.CROP_ALIASES:
+        std = lines[(lines["Crop"] == oc.CROP_ALIASES[r.Crop]) & (lines["Crop_Year"] == r.Crop_Year) & (lines["State_Name"] == r.State_Name)
+                    & (lines["District_Name"] == r.District_Name) & (lines["Season"] == r.Season)]
+        if len(std):
+            return (f"the same record is on line {int(std['Source_Row'].iloc[0]):,} under the standard name "
+                    f"'{oc.CROP_ALIASES[r.Crop]}', which is used")
+    if r.Crop in oc.AGGREGATE_CROPS:
+        return f"'{r.Crop}' is a total of other rows; counting it would count those crops twice"
+    twin = (rep.stacked or {}).get("twin_line")
+    if twin is not None and n in set(twin.values):
+        return f"the same record is on line {int(twin[twin == n].index[0]):,} (first release), which is used"
+    return "removed by the cleaning step"
+
+
+@app.get("/api/line")
+def line(n: int, yield_method: str = "mean"):
+    """Where one line of the CSV ends up: which coefficient it feeds, or why it is not used."""
+    d = db()
+    lines, data, years = d["lines"], d["data"], d["years"]
+    if n < 2 or n > len(lines) + 1:
+        raise HTTPException(404, f"The file has lines 2 to {len(lines) + 1:,} (line 1 is the header).")
+    r = lines.iloc[n - 2]
+    rec = dict(line=n, state=r.State_Name, district=r.District_Name, year=int(r.Crop_Year), season=r.Season, crop=r.Crop,
+               area=None if pd.isna(r.Area) else float(r.Area), prod=None if pd.isna(r.Production) else float(r.Production))
+    if n not in d["used_at"].index:
+        return J(dict(rec, used=False, why=_why_dropped(n, r, lines, d["rep"])))
+    c = data.iloc[int(d["used_at"][n])]
+    rec.update(crop=c.Crop, prod=float(c.Production))           # crop-name variants merged, units fixed
+    if not years[0] <= c.Crop_Year <= years[1]:
+        return J(dict(rec, used=False, why=f"{c.Crop_Year} is outside the {years[0]}–{years[1]} years that are averaged "
+                                           "(the edge years are only partly reported)"))
+    if c.Season in d["blocked"].get(c.State_Name, []):
+        return J(dict(rec, used=False, why=f"{c.State_Name} · {c.Season} has fewer than 2 crops reported in enough years, so it has no LP"))
+    st = Settings(yield_method=yield_method if yield_method in ("mean", "median", "weighted") else "mean")
+    scope = oc.filter_scope(data, c.State_Name, None, c.Season, years)
+    unit, coef, min_years = solve_scope(scope, years, st)
+    if c.Crop not in set(coef["Crop"]):
+        u = unit[unit["Crop"] == c.Crop]
+        why = (u["reason"].iloc[0] if len(u) and u["status"].iloc[0] == "Exclude"
+               else f"{c.Crop} is reported in fewer than {min_years} of the years, so it is left out of the LP")
+        return J(dict(rec, used=False, why=f"{why} ({c.State_Name} · {c.Season})"))
+    yr = scope[scope["Crop"] == c.Crop].groupby("Crop_Year").agg(A=("Area", "sum"), P=("Production", "sum"))
+    t = yr.loc[c.Crop_Year]
+    role = ("its smallest-area year, so it also sets the lower limit a_c" if t.A == yr["A"].min()
+            else "its largest-area year, so it also sets the upper limit m_c" if t.A == yr["A"].max() else None)
+    return J(dict(rec, used=True, year_area=float(t.A), year_prod=float(t.P), n_lines=int((scope["Crop"] == c.Crop).sum()),
+                  n_years=len(yr), role=role))
+
+
 class RunReq(BaseModel):
     state: str
     season: str
@@ -391,7 +455,7 @@ def run(req: RunReq):
                       prod=float(r.Production), yield_=float(r.Yield), median=float(r.median)) for r in odd.itertuples()],
         data=data_info(d), cleaning=dict(rows_in=d["rep"].rows_in, rows_out=d["rep"].rows_out,
                                          steps=[dict(step=a, removed=b, note=w) for a, b, w in d["rep"].steps]),
-        coef=records(coef, ["Crop", "y_c", "yield_sd", "a_c", "m_c", "hist_area", "years"]),
+        coef=records(coef, ["Crop", "y_c", "yield_sd", "a_c", "m_c", "hist_area", "years"], rnd=12),
         opt1=dict(L=L, L_hist=L0, D_hist=D0, Z=r1.objective, lam=r1.shadow_price, scipy_Z=r1.scipy_objective,
                   gain_pct=100 * (r1.objective - D0) / D0, alloc=records(r1.alloc, alloc_cols, rnd=8)),
         opt2=dict(D=D, D_hist=D0, L_hist=L0, land=r2.objective, mu=r2.shadow_price, saving_pct=100 * (L0 - r2.objective) / L0,

@@ -188,8 +188,9 @@ input[type=range]:disabled { cursor: default; opacity: .5; }
 /* model colours: anything tagged .m2 (or the Results page while Model 2 is shown) uses the land colour */
 .m1 { --acc: var(--m1); --acc-soft: var(--m1-soft); --acc-mid: var(--m1-mid); }
 .m2 { --acc: var(--m2); --acc-soft: var(--m2-soft); --acc-mid: var(--m2-mid); }
-#results { transition: --acc .5s ease, --acc-soft .5s ease, --acc-mid .5s ease; }
-body[data-model="2"] #results { --acc: var(--m2); --acc-soft: var(--m2-soft); --acc-mid: var(--m2-mid); }
+.follows-model { transition: --acc .5s ease, --acc-soft .5s ease, --acc-mid .5s ease; }
+body[data-model="2"] .follows-model { --acc: var(--m2); --acc-soft: var(--m2-soft); --acc-mid: var(--m2-mid); }
+.map-seg { margin: 4px 0 6px; }
 .mtag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em; padding: 0 7px; margin-right: 4px;
   border-radius: 4px; background: var(--acc-soft); color: var(--acc); }
 td.act, th.act { background: var(--acc-soft); }
@@ -204,5 +205,5 @@ td.act, th.act { background: var(--acc-soft); }
 @keyframes changed { from { background: var(--acc-soft); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) {
   .kpi.changed, .page.on { animation: none; }
-  #results, .input { transition: none; }
+  .follows-model, .input { transition: none; }
 }

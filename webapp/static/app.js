@@ -9,6 +9,8 @@ const INK = "#111", ACC = "#2f6f4e", ACC_L = "#9fc5ad", GREY = "#c9c9c9", MUTED 
 const SOIL = "#8a5a22";                                   // Model 2 (land) colour; Model 1 (output) is ACC
 const MODEL_COL = (m) => (m === 2 ? SOIL : ACC);
 const SCALE = [[0, "#eef5f0"], [0.5, "#7fae90"], [1, "#1d4d34"]];
+const SCALE2 = [[0, "#f7efe4"], [0.5, "#c69a63"], [1, "#5e3b12"]];        // Model 2 (land) maps
+const SOIL_L = "#dcc3a0";
 const TREND = ["#1d4d34", "#2f6f4e", "#5f9676", "#9fc5ad", "#8a8a8a"];
 const FONT = getComputedStyle(document.body).fontFamily;
 const PAGES = $$(".page").map((p) => p.id);
@@ -72,13 +74,31 @@ function plot(sel, data, layout = {}, height = 340) {
   }, { displayModeBar: false, responsive: true });
 }
 
-// choropleth: one base layer (no data), the values, and an outline for the highlighted area
-function map(sel, geo, ids, z, hover, { pick = null, height = 460, onClick = null, suffix = "%", label = "gain" } = {}) {
-  const all = geo.features.map((f) => f.id);
+// choropleth: one base layer (no data), the values, and an outline for the highlighted area.
+// Each map remembers what it shows; a redraw (new inputs, other model, other crop) fades every area from its old
+// value and colour scale to the new one, so you can see which states or districts moved and by how much.
+const MAPS = {};
+const rgb = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+const mix = (a, b, t) => "#" + rgb(a).map((v, i) => Math.round(v + (rgb(b)[i] - v) * t).toString(16).padStart(2, "0")).join("");
+// values below 0 (worse than history) are grey, 0 is the palest colour, so a loss never reads as a small gain
+const ramp = (base, zmin, zmax) => {
+  const f = zmin < 0 ? -zmin / (zmax - zmin) : 0;
+  return [[0, zmin < 0 ? GREY : base[0][1]], [f, base[0][1]], [f + (1 - f) / 2, base[1][1]], [1, base[2][1]]];
+};
+function map(sel, geo, ids, z, hover, { pick = null, height = 460, onClick = null, suffix = "%", label = "gain", scale = SCALE } = {}) {
+  const el = $(sel), all = geo.features.map((f) => f.id), prev = MAPS[sel];
+  const to = { z, zmin: Math.min(0, ...z), zmax: Math.max(...z, 1e-9) };
+  to.scale = ramp(scale, to.zmin, to.zmax);
+  const from = prev ? { z: ids.map((id) => prev.z[id] ?? prev.zmin), zmin: prev.zmin, zmax: prev.zmax, scale: prev.scale }
+    : { z: ids.map(() => to.zmin), zmin: to.zmin, zmax: to.zmax, scale: to.scale };   // first draw fills in from blank
+  const at = (e) => ({ z: from.z.map((v, i) => v + (to.z[i] - v) * e), zmin: from.zmin + (to.zmin - from.zmin) * e,
+    zmax: from.zmax + (to.zmax - from.zmax) * e,
+    scale: to.scale.map(([s, c], i) => [from.scale[i][0] + (s - from.scale[i][0]) * e, mix(from.scale[i][1], c, e)]) });
+  const token = {}, keep = (f) => (MAPS[sel] = { token, z: Object.fromEntries(ids.map((id, i) => [id, f.z[i]])), zmin: f.zmin, zmax: f.zmax, scale: f.scale });
   const traces = [
     { type: "choropleth", geojson: geo, locations: all, z: all.map(() => 0), colorscale: [[0, "#f1f1f0"], [1, "#f1f1f0"]],
       showscale: false, marker: { line: { color: "#fff", width: 0.6 } }, hoverinfo: "skip" },
-    { type: "choropleth", geojson: geo, locations: ids, z, colorscale: SCALE, zmin: 0,
+    { type: "choropleth", geojson: geo, locations: ids, z: from.z, colorscale: from.scale, zmin: from.zmin, zmax: from.zmax,
       marker: { line: { color: "#fff", width: 0.6 } }, text: hover, hovertemplate: "%{text}<extra></extra>",
       colorbar: { thickness: 10, len: 0.6, ticksuffix: suffix, outlinewidth: 0, title: { text: label, side: "top", font: { size: 11 } } } },
   ];
@@ -88,7 +108,20 @@ function map(sel, geo, ids, z, hover, { pick = null, height = 460, onClick = nul
     height, margin: { l: 0, r: 0, t: 0, b: 0 }, font: { family: FONT, size: 12 }, paper_bgcolor: "#fff",
     geo: { fitbounds: "locations", visible: false, projection: { type: "mercator" }, bgcolor: "#fff" }, dragmode: false,
   }, { displayModeBar: false, responsive: true, scrollZoom: false });
-  if (onClick) { const el = $(sel); el.removeAllListeners?.("plotly_click"); el.on("plotly_click", (e) => onClick(e.points[0].location)); }
+  if (onClick) { el.removeAllListeners?.("plotly_click"); el.on("plotly_click", (e) => onClick(e.points[0].location)); }
+  keep(from);
+  const same = from.z.every((v, i) => Math.abs(v - to.z[i]) < 1e-9) && from.scale.every(([s, c], i) => s === to.scale[i][0] && c === to.scale[i][1]);
+  const apply = (f) => { keep(f); return Plotly.restyle(el, { z: [f.z], zmin: [f.zmin], zmax: [f.zmax], colorscale: [f.scale] }, [1]); };
+  if (same) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return apply(at(1));
+  const t0 = performance.now();
+  const step = async () => {
+    if (MAPS[sel].token !== token) return;                     // a newer draw took over
+    const p = Math.min(1, (performance.now() - t0) / 800);
+    await apply(at(1 - (1 - p) ** 3));
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 // ------------------------------------------------------------------ navigation
@@ -123,12 +156,14 @@ function selectState(state) {
 }
 $("#selState").onchange = () => selectState($("#selState").value);
 $("#selSeason").onchange = () => run();
-$$("[data-model]").forEach((b) => b.onclick = () => {
-  S.model = +b.dataset.model;
-  document.body.dataset.model = S.model;                       // Results page fades to this model's colour
-  $$("[data-model]").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-selected", x === b); });
-  renderModel(); draw("results");
-});
+// one model choice for the whole app: the Results toggle and the map toggles move together
+function setModel(m) {
+  S.model = m;
+  document.body.dataset.model = m;                             // pages that follow the model fade to its colour
+  $$("[data-model]").forEach((x) => { const on = +x.dataset.model === m; x.classList.toggle("on", on); x.setAttribute("aria-selected", on); });
+  if (S.r) { renderModel(); draw(current()); }
+}
+$$("[data-model]").forEach((b) => b.onclick = () => setModel(+b.dataset.model));
 
 async function run() {
   const state = $("#selState").value, season = $("#selSeason").value, settings = { ...S.set };
@@ -337,16 +372,26 @@ function interpret() {
 }
 
 // ------------------------------------------------------------------ charts (drawn when their page is visible)
+// what the India and district maps show for each model
+const METRIC = {
+  1: { st: "gain_pct", di: "output_gain_pct", label: "gain", title: "Output gain", note: "Model 1: extra output on the same land.",
+    hover: (v) => pct(v), scale: SCALE, hi: ACC, lo: ACC_L },
+  2: { st: "saving_pct", di: "land_saving_pct", label: "saved", title: "Land saved", note: "Model 2: land freed while keeping the historical output.",
+    hover: (v) => fmt(v, 1) + "%", scale: SCALE2, hi: SOIL, lo: SOIL_L },
+};
 const CHARTS = {
   async overview(r) {
     if (!S.geo) S.geo = await (await fetch("/static/india_states.json")).json();
-    const ind = S.india[indiaKey(r.season)] || [];
-    map("#chIndia", S.geo, ind.map((x) => x.state), ind.map((x) => x.gain_pct),
+    const ind = S.india[indiaKey(r.season)] || [], M = METRIC[S.model], v = (x) => x[M.st];
+    $("#mapTitle").textContent = `${M.title} by state`;
+    $("#mapNote").textContent = `${M.note}${ind.some((x) => v(x) < 0) ? " Grey: worse than history." : ""} Click a state to load it.`;
+    $("#rankNote").textContent = `${M.title} (Model ${S.model}), all states.`;
+    map("#chIndia", S.geo, ind.map((x) => x.state), ind.map(v),
       ind.map((x) => `<b>${x.state}</b><br>output gain ${pct(x.gain_pct)}<br>land saved ${fmt(x.saving_pct, 1)}%<br>${x.crops} crops`),
-      { pick: r.state, onClick: selectState, height: 520 });
-    const s = [...ind].sort((a, b) => a.gain_pct - b.gain_pct);
-    plot("#chStates", [{ type: "bar", orientation: "h", y: s.map((x) => x.state), x: s.map((x) => x.gain_pct),
-      marker: { color: s.map((x) => (x.state === r.state ? ACC : ACC_L)) }, hovertemplate: "%{y}: %{x:+.1f}%<extra></extra>" }],
+      { pick: r.state, onClick: selectState, height: 520, label: M.label, scale: M.scale });
+    const s = [...ind].sort((a, b) => v(a) - v(b));
+    plot("#chStates", [{ type: "bar", orientation: "h", y: s.map((x) => x.state), x: s.map(v),
+      marker: { color: s.map((x) => (x.state === r.state ? M.hi : M.lo)) }, hovertemplate: `%{y}: %{x:${S.model === 1 ? "+" : ""}.1f}%<extra></extra>` }],
       { showlegend: false, margin: { l: 150, r: 16, t: 8, b: 40 }, xaxis: { ticksuffix: "%" }, yaxis: { tickfont: { size: 11 } } }, 520);
     const el = $("#chStates"); el.removeAllListeners?.("plotly_click"); el.on("plotly_click", (e) => selectState(e.points[0].y));
   },
@@ -452,22 +497,23 @@ const CHARTS = {
       : `${r.state} has fewer than two districts with enough ${r.season} data to compare.`;
     $$("#districts .charts").forEach((el) => el.classList.toggle("hidden", !has));
     if (!has) return;
-    const d = [...r.districts].sort((p, q) => p.output_gain_pct - q.output_gain_pct);
+    const M = METRIC[S.model], d = [...r.districts].sort((p, q) => p[M.di] - q[M.di]);
+    $("#distMapTitle").textContent = `${M.title} on the map`;
     if (r.district_geo && r.district_geo.features.length) {
       const g = Object.fromEntries(d.map((x) => [x.District, x]));
       const ids = r.district_geo.features.map((f) => f.id);
-      map("#chDistMap", r.district_geo, ids, ids.map((i) => g[i].output_gain_pct),
+      map("#chDistMap", r.district_geo, ids, ids.map((i) => g[i][M.di]),
         ids.map((i) => `<b>${title(i)}</b><br>output gain ${pct(g[i].output_gain_pct)}<br>land saved ${fmt(g[i].land_saving_pct, 1)}%`),
-        { height: 520 });
+        { height: 520, label: M.label, scale: M.scale });
     }
     plot("#chDist", [
       { type: "bar", orientation: "h", name: "Output gain % (Model 1)", y: d.map((x) => title(x.District)), x: d.map((x) => x.output_gain_pct), marker: { color: ACC } },
       { type: "bar", orientation: "h", name: "Land saved % (Model 2)", y: d.map((x) => title(x.District)), x: d.map((x) => x.land_saving_pct), marker: { color: SOIL } },
     ], { barmode: "group", xaxis: { title: "%" } }, Math.max(420, 22 * d.length + 80));
-    plot("#chDistScatter", [{ type: "scatter", mode: "markers", x: d.map((x) => x.crops), y: d.map((x) => x.output_gain_pct),
-      text: d.map((x) => title(x.District)), marker: { color: ACC, size: 10, opacity: 0.75, line: { color: "#fff", width: 1 } },
+    plot("#chDistScatter", [{ type: "scatter", mode: "markers", x: d.map((x) => x.crops), y: d.map((x) => x[M.di]),
+      text: d.map((x) => title(x.District)), marker: { color: M.hi, size: 10, opacity: 0.75, line: { color: "#fff", width: 1 } },
       hovertemplate: "%{text}<br>%{x} crops · %{y:+.1f}%<extra></extra>" }],
-      { showlegend: false, xaxis: { title: "number of crops in the district's LP", dtick: 2 }, yaxis: { title: "output gain %" } }, 320);
+      { showlegend: false, xaxis: { title: "number of crops in the district's LP", dtick: 2 }, yaxis: { title: `${M.title.toLowerCase()} %` } }, 320);
   },
 };
 function draw(page) { if (S.r && CHARTS[page]) CHARTS[page](S.r); }

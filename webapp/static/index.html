@@ -66,15 +66,19 @@
     <h2>Headline results <span class="scope" data-scope></span></h2>
     <div class="kpis" id="kpiOverview"></div>
 
-    <div class="grid2 charts map-row">
+    <div class="grid2 charts map-row follows-model">
       <div>
-        <h2>Output gain by state <span class="scope" id="mapSeason"></span></h2>
-        <p class="note">Model 1 solved for every state. Click a state to load it.</p>
+        <h2><span id="mapTitle">Output gain by state</span> <span class="scope" id="mapSeason"></span></h2>
+        <div class="seg small map-seg" role="tablist" aria-label="Model shown on the map">
+          <button type="button" data-model="1" class="on" aria-selected="true">Model 1 · Output gain</button>
+          <button type="button" data-model="2" aria-selected="false">Model 2 · Land saved</button>
+        </div>
+        <p class="note" id="mapNote">Model 1: extra output on the same land. Click a state to load it.</p>
         <div class="chart" id="chIndia"></div>
       </div>
       <div>
         <h2>All states ranked</h2>
-        <p class="note">Output gain on the same land (Model 1).</p>
+        <p class="note" id="rankNote">Output gain (Model 1), all states.</p>
         <div class="chart" id="chStates"></div>
       </div>
     </div>
@@ -193,7 +197,7 @@
   </section>
 
   <!-- Results ------------------------------------------------------------>
-  <section class="page" id="results">
+  <section class="page follows-model" id="results">
     <h1>Results <span class="scope" data-scope></span></h1>
     <div class="seg" role="tablist">
       <button type="button" data-model="1" class="on" aria-selected="true">Model 1 · Max output</button>
@@ -248,8 +252,13 @@
   <section class="page" id="districts">
     <h1>Districts <span class="scope" data-scope></span></h1>
     <p class="note" id="distNote">Both models solved separately for every district, each with its own land, output and bounds.</p>
-    <div class="grid2 charts">
-      <div><h2>Output gain on the map</h2><div class="chart" id="chDistMap"></div></div>
+    <div class="grid2 charts follows-model">
+      <div><h2 id="distMapTitle">Output gain on the map</h2>
+        <div class="seg small map-seg" role="tablist" aria-label="Model shown on the map">
+          <button type="button" data-model="1" class="on" aria-selected="true">Model 1 · Output gain</button>
+          <button type="button" data-model="2" aria-selected="false">Model 2 · Land saved</button>
+        </div>
+        <div class="chart" id="chDistMap"></div></div>
       <div><h2>Gain by district</h2><div class="chart" id="chDist"></div></div>
     </div>
     <div class="charts">

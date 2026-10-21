@@ -94,7 +94,7 @@ def standardise(raw: pd.DataFrame, colmap: dict) -> pd.DataFrame:
     df.loc[need, "Yield"] = df.loc[need, "Production"] / df.loc[need, "Area"]
     for c in ["State_Name", "District_Name", "Season", "Crop"]:
         df[c] = df[c].astype(str).str.strip()
-    return df[CANONICAL]
+    return df[CANONICAL + (["Source_Row"] if "Source_Row" in df else [])]   # Source_Row: line in the input file
 
 
 # --------------------------------------------------------------------------
@@ -146,59 +146,103 @@ class CleaningReport:
         return pd.DataFrame(self.steps, columns=["Cleaning step", "Rows removed", "Why"])
 
 
-RECORD_KEY = ["State_Name", "District_Name", "Crop_Year", "Season", "Crop", "Area"]
+# One record = one crop in one district, season and year. Area and Production are values, not part of the key,
+# so editing either can never make a record look new.
+RECORD_KEY = ["State_Name", "District_Name", "Crop_Year", "Season", "Crop"]
 
 
 def reconcile_stacked_sources(d: pd.DataFrame, min_share=0.05):
     """
-    Detect and fix a file made of two stacked copies of the same records whose
+    Detect and fix a file made of two stacked releases of the same records whose
     Production differs by a constant power-of-ten factor.
 
     The bundled GOV/Kaggle CSV is exactly this: rows 0-236,377 (1997-2015,
-    Production in tonnes, the original data.gov.in release) are followed by
-    rows 236,378-575,878 (1997-2020) where Production is 100x larger.  212,373
-    records appear in both blocks.  Averaging yields without this fix mixes
-    two scales and doubles the weight of 1997-2014.
+    Production in tonnes, the first data.gov.in release) are followed by rows
+    236,378-575,878 (1997-2020, a later release) where Production is 100x larger.
+    213,891 records appear in both; 1,518 of them have a revised Area in the
+    later release.
 
-    Fix: (1) find record pairs sharing State/District/Year/Season/Crop/Area,
-    (2) take the modal Production ratio as the scale factor k, (3) if the pairs
-    split cleanly by row position (all low twins before all high twins), divide
-    Production of every row in the second block by k, (4) keep one row per pair.
+    Fix, in four steps that do not depend on any Area or Production value:
+      (1) twins = rows sharing State/District/Year/Season/Crop;
+      (2) k = most common Production ratio between twins, snapped to a power of ten;
+      (3) the second release starts at the first row that is the later twin of a
+          pair; every row from there on is divided by k (row order, unlike values,
+          is untouched by editing or deleting rows);
+      (4) one row per record is kept: the first release where both exist.
+    If the rows were re-ordered (no clean split), each row's unit is decided from
+    its own values instead: of two twins the higher-Production one is divided by k;
+    a lone row is divided by k when its year is after the first release ends, or its
+    yield is more than sqrt(k) times the crop's typical yield. This is approximate
+    (about 3% of lone rows have yields that fit either unit), so keep the row order.
+    Twins that still disagree after rescaling (a revision in the later release, or
+    an edit to one copy) are listed in info["revised"].
     """
     d = d.reset_index(drop=True)
-    dup_mask = d.duplicated(RECORD_KEY, keep=False)
-    if dup_mask.sum() < min_share * len(d):
+    dup = d.duplicated(RECORD_KEY, keep=False)
+    if dup.sum() < min_share * len(d):
         return d, None
-    dup = d[dup_mask].copy()
-    dup["_pos"] = dup.index
-    grp = dup.groupby(RECORD_KEY, sort=False)
-    sizes = grp["_pos"].transform("size")
-    pairs = dup[sizes == 2].sort_values(RECORD_KEY + ["Production"])
-    lo = pairs.groupby(RECORD_KEY, sort=False).first()
-    hi = pairs.groupby(RECORD_KEY, sort=False).last()
-    ratio = (hi["Production"] / lo["Production"].replace(0, np.nan)).dropna()
-    if ratio.empty:
+    pos = pd.Series(d.index[dup], index=d.index[dup])
+    g = pos.groupby([d.loc[dup, c] for c in RECORD_KEY], sort=False)
+    first, last = g.min().to_numpy(), g.max().to_numpy()        # twins in file order
+    P = d["Production"].to_numpy(dtype=float)
+    hi, lo = np.maximum(P[first], P[last]), np.minimum(P[first], P[last])
+    ok = lo > 0
+    if not ok.any():
         return d, None
-    k = float(ratio.round(2).mode().iloc[0])
-    share_k = float((ratio.round(2) == k).mean())
+    ratio = np.round(hi[ok] / lo[ok], 2)
+    vals, counts = np.unique(ratio, return_counts=True)
+    k, share_k = float(vals[counts.argmax()]), float(counts.max() / ok.sum())
     if k < 5 or share_k < 0.5:
         return d, None
-    k = 10 ** round(np.log10(k))  # snap to the power of ten
-    boundary = int(hi["_pos"].min()) if lo["_pos"].max() < hi["_pos"].min() else None
-    info = dict(pairs=int(len(lo)), factor=k, share_with_factor=share_k, boundary_row=boundary,
-                rows_rescaled=0, rows_dropped=0)
+    k = float(10 ** round(np.log10(k)))
+
+    # (3) where does the second release start? the candidate that splits the most pairs cleanly
+    cands = np.unique(np.sort(last)[:50])
+    agree = np.array([((first < b) & (last >= b)).mean() for b in cands])
+    boundary = int(cands[agree.argmax()]) if agree.max() >= 0.99 else None
+    line = (int(d["Source_Row"].iloc[boundary]) if boundary is not None and "Source_Row" in d else None)
+    info = dict(pairs=int(len(first)), factor=int(k), share_with_factor=share_k, boundary_row=boundary, boundary_line=line,
+                mode="row position" if boundary is not None else "per-row yield (rows were re-ordered)",
+                rows_rescaled=0, rows_dropped=0, revised=0)
+    scaled = np.zeros(len(d), dtype=bool)
     if boundary is not None:
-        second = d.index >= boundary
-        d.loc[second, "Production"] = d.loc[second, "Production"] / k
-        info["rows_rescaled"] = int(second.sum())
-        n = len(d)
-        d = d.drop_duplicates(RECORD_KEY, keep="first")       # keep the block-1 twin
-        info["rows_dropped"] = n - len(d)
-    else:  # no clean split: keep the lower-scale twin of each pair, leave singletons alone
-        drop_idx = hi["_pos"].values
-        d = d.drop(index=drop_idx)
-        info["rows_dropped"] = len(drop_idx)
-    return d.reset_index(drop=True), info
+        scaled[boundary:] = True
+        keep_first, drop_twin = first, last
+    else:
+        twin_hi = np.where(P[first] >= P[last], first, last)       # the x k copy of each pair
+        twin_lo = np.where(P[first] >= P[last], last, first)
+        scaled[twin_hi] = True
+        lone = ~dup.to_numpy()
+        y = (d["Production"] / d["Area"].where(d["Area"] > 0)).to_numpy(dtype=float)
+        ref = pd.Series(y[twin_lo]).groupby(d["Crop"].to_numpy()[twin_lo]).median()
+        typical = d["Crop"].map(ref).to_numpy(dtype=float)
+        after = d["Crop_Year"].to_numpy() > d["Crop_Year"].to_numpy()[twin_lo].max()   # only the later release has these years
+        scaled |= lone & (after | (np.isfinite(typical) & (y > typical * np.sqrt(k))))
+        keep_first, drop_twin = twin_lo, twin_hi
+    d.loc[scaled, "Production"] = d.loc[scaled, "Production"] / k
+    info["rows_rescaled"] = int(scaled.sum())
+    if "Source_Row" in d:
+        info["scaled_lines"] = frozenset(d["Source_Row"].to_numpy()[scaled].tolist())
+
+    # twins that disagree once in one unit: revised in the later release, or edited
+    a1, a2 = d["Area"].to_numpy()[keep_first], d["Area"].to_numpy()[drop_twin]
+    p1, p2 = d["Production"].to_numpy()[keep_first], d["Production"].to_numpy()[drop_twin]
+    differ = ~np.isclose(a1, a2, rtol=1e-6) | ~np.isclose(p1, p2, rtol=5e-3)
+    rev = d.loc[keep_first[differ], RECORD_KEY].reset_index(drop=True)
+    rev["Area_used"], rev["Production_used"] = a1[differ], p1[differ]
+    rev["Area_other"], rev["Production_other"] = a2[differ], p2[differ]
+    if "Source_Row" in d:
+        rev["Row_used"], rev["Row_other"] = d["Source_Row"].to_numpy()[keep_first[differ]], d["Source_Row"].to_numpy()[drop_twin[differ]]
+    info["revised"], info["revised_records"] = int(differ.sum()), rev
+    if "Source_Row" in d:                                          # line of the unused copy, for tracing by hand
+        info["twin_line"] = pd.Series(d["Source_Row"].to_numpy()[drop_twin], index=d["Source_Row"].to_numpy()[keep_first])
+
+    keep = np.ones(len(d), dtype=bool)
+    keep[drop_twin] = False
+    keep &= ~d.duplicated(RECORD_KEY, keep="first").to_numpy() | ~dup.to_numpy()  # a 3rd copy, if any, goes too
+    keep[keep_first] = True
+    info["rows_dropped"] = int((~keep).sum())
+    return d[keep].reset_index(drop=True), info
 
 
 def clean(df: pd.DataFrame, drop_zero_production=True, merge_aliases=True,
@@ -211,19 +255,8 @@ def clean(df: pd.DataFrame, drop_zero_production=True, merge_aliases=True,
     rep.add("Missing Crop / Area / Production", n - len(d), "Cannot form a yield coefficient")
 
     n = len(d)
-    d = d.drop_duplicates()
+    d = d.drop_duplicates(subset=[c for c in d.columns if c != "Source_Row"])
     rep.add("Exact duplicate rows", n - len(d), "Would double-weight a year")
-
-    if reconcile_stacked:
-        d, info = reconcile_stacked_sources(d)
-        rep.stacked = info
-        if info:
-            rep.add("Stacked duplicate source reconciled", info["rows_dropped"],
-                    f"{info['pairs']:,} records appear twice with Production x{info['factor']:,.0f}; "
-                    f"{info['rows_rescaled']:,} rows from row {info['boundary_row']:,} on rescaled "
-                    f"(/{info['factor']:,.0f}) to one unit, twins dropped")
-        else:
-            rep.add("Stacked duplicate source check", 0, "No stacked copy detected")
 
     n = len(d)
     d = d[d["Area"] > 0]
@@ -234,6 +267,22 @@ def clean(df: pd.DataFrame, drop_zero_production=True, merge_aliases=True,
         d = d[d["Production"] > 0]
         rep.add("Production = 0", n - len(d),
                 "Usually unreported, not true crop failure; would drag the yield average to 0")
+
+    # after the unusable rows are gone: a record disappears only when every copy of it is gone or unusable
+    if reconcile_stacked:
+        d, info = reconcile_stacked_sources(d)
+        rep.stacked = info
+        if info:
+            if info["boundary_row"] is None:
+                where = "rows whose year or yield shows the larger unit (the file was re-ordered)"
+            else:
+                where = f"rows from {'line' if info['boundary_line'] else 'row'} {info['boundary_line'] or info['boundary_row']:,} of the file on"
+            rep.add("Stacked duplicate source reconciled", info["rows_dropped"],
+                    f"{info['pairs']:,} records appear twice with Production x{info['factor']:,}; "
+                    f"{info['rows_rescaled']:,} {where} divided by {info['factor']:,}; one row kept per record "
+                    f"(the first release). {info['revised']:,} records differ between the two copies.")
+        else:
+            rep.add("Stacked duplicate source check", 0, "No stacked copy detected")
 
     if drop_aggregates:
         n = len(d)

@@ -20,7 +20,7 @@ For **Karnataka, Kharif, 1998–2019** (19 crops):
 
 With a realistic **±10%** limit on how much each crop's area can change, the gain is **+6.2% output**, or **5.0% less land**.
 
-We also found that the public dataset contains a **duplicate copy of 212,373 records, inflated ×100**. It is fixed automatically before any modelling.
+We also found that the public dataset contains a **second copy of 213,888 records, inflated ×100**. It is fixed automatically before any modelling.
 
 ---
 
@@ -34,13 +34,15 @@ The source is the *District-wise, Season-wise Crop Production Statistics* (MoA&F
 
 | Issue found | Action | Rows |
 |---|---|---:|
-| **Stacked duplicate source.** Rows 236,378 onward repeat earlier records with Production ×100 (99.4% of pairs) | Rescale ÷100, drop the twins | −212,373 |
 | Production = 0 (mostly unreported) | Drop | −3,634 |
+| **Stacked duplicate source.** From line 236,380 the file is a later release: 1997–2015 again, plus 2016–2020, with Production ×100 | Divide by 100; keep one row per record (state, district, year, season, crop), the first release where both exist | −213,888 |
 | Aggregate rows (Total foodgrain, Pulses total, Oilseeds total) | Drop, to avoid double counting | −1,133 |
 | Spelling variants (Paddy, Dry Ginger, …) | Merge | 3,565 renamed |
 | Count or bale units (Coconut in nuts; Cotton, Jute and Mesta in bales) | Exclude from pooling | — |
 
-**Result:** 358,739 clean rows. Production is in tonnes; yields now match official figures (rice 1.8–2.8 t/ha). 1997 and 2020 have only partial coverage, so the analysis window is **1998–2019**.
+**Result:** 357,224 clean rows. Production is in tonnes; yields now match official figures (rice 1.8–2.8 t/ha). 1997 and 2020 have only partial coverage, so the analysis window is **1998–2019**.
+
+The two releases are matched on the record (state, district, year, season, crop), not on its values. 2,614 records differ between them, mostly because the later release rounds to the nearest thousand (Anantapur 2012 Arhar/Tur: 56,586 ha vs 56,000 ha), so the first release is kept. Unusable rows (blank, zero or negative) are removed before matching, so a record is lost only when every copy of it is. Each record is counted once, whatever is edited. In the web app, *Data → Check the numbers by hand* shows every coefficient worked out from the yearly totals, down to the CSV lines used (and the unused twin line).
 
 ![Stacked-source fix](results/fig1_stacked_source_fix.png)
 

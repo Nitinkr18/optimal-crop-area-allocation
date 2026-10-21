@@ -6,39 +6,54 @@
 |---|---|---|
 | Missing Crop / Area / Production | 0 | Cannot form a yield coefficient |
 | Exact duplicate rows | 0 | Would double-weight a year |
-| Stacked duplicate source reconciled | 212373 | 212,373 records appear twice with Production x100; 339,501 rows from row 236,378 on rescaled (/100) to one unit, twins dropped |
 | Area <= 0 | 0 | Yield undefined (division by zero) |
 | Production = 0 | 3634 | Usually unreported, not true crop failure; would drag the yield average to 0 |
+| Stacked duplicate source reconciled | 213888 | 213,888 records appear twice with Production x100; 339,390 rows from line 236,380 of the file on divided by 100; one row kept per record (the first release). 2,614 records differ between the two copies. |
 | Aggregate rows (Total foodgrain, Pulses total, Oilseeds total) | 1133 | These rows are sums of other rows -> double counting |
 | Crop-name spelling variants merged | 0 | 3565 rows renamed (e.g. Paddy -> Rice) |
 
-Rows: 575,879 -> 358,739
+Rows: 575,879 -> 357,224
 
 ## Stacked-source reconciliation
 
-{'pairs': 212373, 'factor': 100, 'share_with_factor': 0.9942882704713472, 'boundary_row': 236378, 'rows_rescaled': 339501, 'rows_dropped': 212373}
+{'pairs': 213888, 'factor': 100, 'share_with_factor': 0.9877786505086774, 'boundary_row': 232855, 'boundary_line': 236380, 'mode': 'row position', 'rows_rescaled': 339390, 'rows_dropped': 213888, 'revised': 2614}
+
+Records whose two copies differ (2,614; first release used), first 10:
+
+| State_Name | District_Name | Crop_Year | Season | Crop | Area_used | Production_used | Area_other | Production_other | Row_used | Row_other |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Andaman and Nicobar Islands | NICOBARS | 2004 | Whole Year | Banana | 66.420 | 404.120 | 66.418 | 404.120 | 40 | 277595 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Arhar/Tur | 56,586.000 | 8,035.000 | 56,000.000 | 8,000.000 | 795 | 363893 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Bajra | 2,176.000 | 1,456.000 | 2,000.000 | 1,000.000 | 796 | 363990 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Castor seed | 24,154.000 | 9,179.000 | 25,000.000 | 9,000.000 | 798 | 364137 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Cotton(lint) | 27,566.000 | 35,511.000 | 28,000.000 | 35,000.000 | 800 | 364265 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Dry chillies | 2,736.000 | 5,603.000 | 3,000.000 | 6,000.000 | 802 | 364373 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Groundnut | 708,708.000 | 295,531.000 | 709,000.000 | 296,000.000 | 804 | 364573 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Horse-gram | 848.000 | 589.000 | 1,000.000 | 1,000.000 | 805 | 364692 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Jowar | 7,599.000 | 6,930.000 | 8,000.000 | 7,000.000 | 806 | 364760 |
+| Andhra Pradesh | ANANTAPUR | 2012 | Kharif | Maize | 22,039.000 | 63,516.000 | 22,000.000 | 63,000.000 | 809 | 364872 |
 
 | Crop_Year | Pooled_yield_raw | Pooled_yield_clean | YoY_change_% |
 |---|---|---|---|
 | 1997 | 162.707 | 5.338 |  |
 | 1998 | 181.344 | 3.417 | -35.992 |
-| 1999 | 193.842 | 3.653 | 6.918 |
-| 2000 | 182.557 | 3.523 | -3.564 |
+| 1999 | 193.842 | 3.654 | 6.931 |
+| 2000 | 182.557 | 3.523 | -3.575 |
 | 2001 | 187.580 | 3.625 | 2.884 |
 | 2002 | 182.426 | 3.555 | -1.934 |
 | 2003 | 171.065 | 3.354 | -5.657 |
-| 2004 | 163.477 | 3.140 | -6.357 |
-| 2005 | 188.039 | 3.814 | 21.459 |
-| 2006 | 200.163 | 3.846 | 0.825 |
-| 2007 | 220.678 | 4.064 | 5.683 |
-| 2008 | 189.211 | 4.003 | -1.505 |
-| 2009 | 195.363 | 4.143 | 3.500 |
-| 2010 | 208.875 | 4.451 | 7.420 |
-| 2011 | 240.503 | 4.327 | -2.786 |
-| 2012 | 230.003 | 4.124 | -4.688 |
-| 2013 | 254.490 | 4.448 | 7.871 |
-| 2014 | 283.946 | 4.594 | 3.280 |
-| 2015 | 408.898 | 4.204 | -8.501 |
+| 2004 | 163.477 | 3.142 | -6.311 |
+| 2005 | 188.039 | 3.824 | 21.698 |
+| 2006 | 200.163 | 3.863 | 1.026 |
+| 2007 | 220.678 | 3.814 | -1.258 |
+| 2008 | 189.211 | 4.013 | 5.204 |
+| 2009 | 195.363 | 4.143 | 3.244 |
+| 2010 | 208.875 | 4.463 | 7.717 |
+| 2011 | 240.503 | 4.296 | -3.725 |
+| 2012 | 230.003 | 4.190 | -2.488 |
+| 2013 | 254.490 | 4.450 | 6.214 |
+| 2014 | 283.946 | 4.595 | 3.265 |
+| 2015 | 408.898 | 4.204 | -8.518 |
 | 2016 | 434.516 | 4.345 | 3.364 |
 | 2017 | 479.019 | 4.790 | 10.242 |
 | 2018 | 488.544 | 4.885 | 1.988 |

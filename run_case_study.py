@@ -44,7 +44,8 @@ def md(df, floatfmt=",.2f"):
 
 def main():
     log = []
-    raw = pd.read_csv(GOV)
+    raw = pd.read_csv(GOV, low_memory=False)
+    raw["Source_Row"] = raw.index + 2                       # line number in the CSV (line 1 is the header)
     df = oc.standardise(raw, oc.guess_column_map(raw.columns))
     data, rep = oc.clean(df)
     log.append("## Cleaning log\n\n" + md(rep.as_frame(), ",.0f") +
@@ -61,7 +62,11 @@ def main():
     axs[1].plot(sb["Crop_Year"], sb["Pooled_yield"], marker="o", color=BLUE, lw=2, label="reconciled")
     axs[1].set_title("After reconciliation (t/ha)"); axs[1].set_xlabel("Crop year")
     fig.tight_layout(); fig.savefig(OUT / "fig1_stacked_source_fix.png"); plt.close(fig)
-    log.append("## Stacked-source reconciliation" + NL + NL + str(rep.stacked) + NL + NL +
+    summary = {k: v for k, v in rep.stacked.items() if k not in ("revised_records", "twin_line", "scaled_lines")}
+    rev = rep.stacked["revised_records"]
+    log.append("## Stacked-source reconciliation" + NL + NL + str(summary) + NL + NL +
+               f"Records whose two copies differ ({len(rev):,}; first release used), first 10:" + NL + NL +
+               md(rev.head(10), ",.3f") + NL + NL +
                md(sb_raw[["Crop_Year", "Pooled_yield"]].merge(sb[["Crop_Year", "Pooled_yield", "YoY_change_%"]],
                                                             on="Crop_Year", suffixes=("_raw", "_clean")).round(3),
                   ",.3f") + NL)

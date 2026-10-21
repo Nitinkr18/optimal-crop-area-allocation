@@ -103,12 +103,26 @@
     <p class="note">Bars are y<sub>c</sub>; whiskers show ±1 standard deviation across years. The model favours crops on the left.</p>
     <div class="chart" id="chYield"></div>
 
+    <div class="hidden" id="unusual"></div>
+
+    <h2>Check the numbers by hand</h2>
+    <p class="note">Every coefficient the LP uses for one crop, worked out from the yearly totals, down to the lines of the CSV
+      they come from. Edit the CSV and save it: the app reloads it within a few seconds and re-solves.</p>
+    <label class="field trace-pick">Crop <select id="selTrace"></select></label>
+    <div class="grid2 trace">
+      <div class="card math-card" id="traceMath"></div>
+      <div class="table-wrap" id="traceYears"></div>
+    </div>
+    <details class="lines" id="traceLines"><summary></summary><p class="note" id="traceLinesNote"></p><div class="table-wrap"></div></details>
+
     <h2>Dataset and cleaning</h2>
     <div class="grid2">
       <table class="facts">
         <tr><th>Dataset</th><td>District-wise, Season-wise Crop Production Statistics</td></tr>
         <tr><th>Source</th><td>Ministry of Agriculture &amp; Farmers Welfare, data.gov.in</td></tr>
-        <tr><th>Size</th><td>575,879 rows · 36 states · crop years 1997–2020</td></tr>
+        <tr><th>File</th><td id="dataFile">–</td></tr>
+        <tr><th>Rows</th><td id="dataRows">–</td></tr>
+        <tr><th>Duplicates</th><td id="dataDup">–</td></tr>
         <tr><th>Missing</th><td>Price and cost, so the objective is output or land, not profit</td></tr>
       </table>
       <div>
@@ -205,6 +219,7 @@
     </div>
     <div class="kpis" id="kpiModel"></div>
     <p class="note" id="modelNote"></p>
+    <p class="checks" id="modelCheck"></p>
 
     <h2>What the plan says</h2>
     <ul class="interp" id="interp"></ul>

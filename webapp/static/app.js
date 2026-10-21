@@ -2,7 +2,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const DEF = { land_pct: 100, target_pct: 100, bounds: "historical", band_pct: 20, pulse_share: 0, yield_method: "mean" };
-const S = { seasons: {}, blocked: {}, r: null, india: {}, geo: null, model: 1, last: null, crop: null, cropData: {}, set: { ...DEF }, base: {} };
+const S = { seasons: {}, blocked: {}, trace: {}, r: null, india: {}, geo: null, model: 1, last: null, crop: null, cropData: {}, set: { ...DEF }, base: {} };
 const isDefault = (st) => Object.keys(DEF).every((k) => st[k] === DEF[k]);
 const indiaKey = (season) => `${season}|${JSON.stringify(S.set)}`;
 const INK = "#111", ACC = "#2f6f4e", ACC_L = "#9fc5ad", GREY = "#c9c9c9", MUTED = "#8a8a8a";
@@ -125,8 +125,8 @@ function map(sel, geo, ids, z, hover, { pick = null, height = 460, onClick = nul
 }
 
 // ------------------------------------------------------------------ navigation
-function show() {
-  const page = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
+function show(hash = location.hash) {
+  const page = PAGES.includes(hash.slice(1)) ? hash.slice(1) : "overview";
   $$(".page").forEach((p) => p.classList.toggle("on", p.id === page));
   $$(".menu a").forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + page));
   const i = PAGES.indexOf(page);
@@ -138,7 +138,15 @@ function show() {
   window.scrollTo(0, 0);
   draw(page);
 }
-window.addEventListener("hashchange", show);
+window.addEventListener("hashchange", () => show());
+// A link like /#results would make the browser jump to that section (and keep re-jumping while the page loads),
+// so the hash is taken out of the URL until loading has finished, then put back.
+const START = location.hash;
+if (START) history.replaceState(null, "", location.pathname + location.search);
+window.addEventListener("load", () => {
+  if (START && !location.hash) history.replaceState(null, "", location.pathname + location.search + START);
+  window.scrollTo(0, 0);
+});
 const current = () => PAGES.find((p) => $("#" + p).classList.contains("on"));
 
 // ------------------------------------------------------------------ selection
@@ -190,6 +198,7 @@ async function run(retry = true) {
     S.r = r; S.india[indiaKey(season)] = ind; S.last = [state, season, settings];
     S.base[bkey] = custom ? base : r;
     render();
+    if (S.meta && r.data_version !== S.meta.data.version) setTimeout(checkData);
     status(S.note || `${r.coef.length} crops · ${r.years[0]}–${r.years[1]}`);
     S.note = null;
     draw(current());
@@ -311,9 +320,24 @@ function render() {
     ["LP crop area per year", N(p.area, big), `ha · ${big(p.production)} t output`],
   ]);
 
-  const c = S.meta.cleaning;
+  const c = r.cleaning, dup = c.steps.find((s) => s.step.startsWith("Stacked"));
   $("#cleaning").innerHTML = `<p><b>${fmt(c.rows_in)}</b> rows → <b>${fmt(c.rows_out)}</b> after cleaning</p>` +
-    table([{ k: "step", label: "Removed (whole dataset)" }, { k: "removed", label: "Rows", r: 1, f: (v) => "−" + fmt(v) }], c.steps);
+    table([{ k: "step", label: "Removed (whole dataset)" }, { k: "removed", label: "Rows", r: 1, f: (v) => "−" + fmt(v) }], c.steps.filter((s) => s.removed > 0));
+  $("#dataFile").textContent = `${r.data.file} · saved ${when(r.data.modified)}`;
+  $("#dataRows").textContent = `${fmt(c.rows_in)} lines read, ${fmt(c.rows_out)} records used`;
+  $("#dataDup").textContent = dup ? dup.note : "–";
+  const typo = r.unusual.filter((u) => u.yield_ / u.median > 100);   // droughts push yields down, unit slips push them up
+  $("#unusual").classList.toggle("hidden", !r.unusual.length);
+  $("#unusual").innerHTML = r.unusual.length ? `<details class="lines${typo.length ? " alert" : ""}"${typo.length ? " open" : ""}><summary>${fmt(r.unusual_total)} row${r.unusual_total > 1 ? "s" : ""}
+    far from the crop's usual yield here${typo.length ? ` · <span class="flag">${typo.length} more than 100× above: likely a typo or unit slip</span>` : ""}</summary>
+    <p class="note">Yield more than 10× above or below the crop's median in ${esc(r.state)} · ${esc(r.season)}: droughts, very small plots, or typos.
+    They are kept, so a typo moves the crop's yield y<sub>c</sub>; fix or delete such lines in the CSV. The ${r.unusual.length} furthest:</p>` +
+    table([{ k: "line", label: "CSV line", r: 1, f: (v) => fmt(v) }, { k: "crop", label: "Crop" }, { k: "district", label: "District", f: (v) => esc(title(v)) },
+      { k: "year", label: "Year" }, { k: "area", label: "Area (ha)", r: 1, f: (v) => fmt(v) }, { k: "prod", label: "Production (t)", r: 1, f: (v) => fmt(v, 1) },
+      { k: "yield_", label: "Yield", r: 1, f: (v, u) => `<span class="${typo.includes(u) ? "flag" : ""}">${fmt(v, 3)}</span>` },
+      { k: "median", label: "Usual", r: 1, f: (v) => fmt(v, 3) }], r.unusual) + "</details>" : "";
+  const tc = $("#selTrace"), keep = tc.value, crops = [...r.coef].sort((a, b) => b.hist_area - a.hist_area).map((d) => d.Crop);
+  tc.innerHTML = crops.map((x) => `<option ${x === keep ? "selected" : ""}>${esc(x)}</option>`).join("");
   $("#excluded").innerHTML = r.excluded.length
     ? "<div style='height:14px'></div>" + table([{ k: "Crop", label: `Excluded here (${r.state})` }, { k: "reason", label: "Reason" }], r.excluded) : "";
 
@@ -346,6 +370,17 @@ function renderModel() {
       ? `Duality check: μ* = ${fmt(o2.mu, 4)} ha per tonne, and 1/λ* at that land = ${fmt(o2.inv_lam, 4)}.` +
         (Math.abs(o2.mu - o2.inv_lam) < 1e-6 * o2.mu ? " They match." : "") : "";
   }
+  // check the solution against the constraints, from the allocation table alone
+  const a = (S.model === 1 ? o1 : o2).alloc, sx = a.reduce((s, d) => s + d.x_opt, 0), sy = a.reduce((s, d) => s + d.y_c * d.x_opt, 0);
+  const near = (u, v) => Math.abs(u - v) <= 1e-6 * Math.max(1, Math.abs(v)) + 0.01;
+  const inb = a.every((d) => d.x_opt >= d.a_c - 0.01 && d.x_opt <= d.m_c + 0.01);
+  const mark = (ok) => `<span class="${ok ? "ok" : "no"}">${ok ? "✓" : "✗"}</span>`;
+  $("#modelCheck").innerHTML = "Check from the table below: " + (S.model === 1
+    ? `Σ x<sub>c</sub> = ${fmt(sx)} ha ${sx <= o1.L + 0.01 ? "≤" : ">"} L ${mark(sx <= o1.L + 0.01)} · Σ y<sub>c</sub>x<sub>c</sub> = ${fmt(sy)} t = Z* ${mark(near(sy, o1.Z))}`
+    : `Σ y<sub>c</sub>x<sub>c</sub> = ${fmt(sy)} t ${sy >= o2.D - 0.01 ? "≥" : "<"} target ${mark(sy >= o2.D - 0.01)} · Σ x<sub>c</sub> = ${fmt(sx)} ha = minimum land ${mark(near(sx, o2.land))}`) +
+    ` · every crop within [a<sub>c</sub>, m<sub>c</sub>] ${mark(inb)}` +
+    (r.pulse_active ? (() => { const ps = a.filter((d) => r.pulse_crops.includes(d.Crop)).reduce((s, d) => s + d.x_opt, 0) / sx;
+      return ` · pulses ${fmt(100 * ps, 1)}% ≥ ${S.set.pulse_share}% ${mark(ps >= S.set.pulse_share / 100 - 1e-6)}`; })() : "");
   const x2 = Object.fromEntries(o2.alloc.map((d) => [d.Crop, d.x_opt]));
   const st = (s) => (s.startsWith("at max") ? "at max" : s.startsWith("at min") ? "at min" : "between bounds");
   const s2 = Object.fromEntries(o2.alloc.map((d) => [d.Crop, st(d.bound_status)]));
@@ -389,6 +424,77 @@ function interpret() {
   $("#interp").innerHTML = items.filter(Boolean).map((s) => `<li>${s}</li>`).join("");
 }
 
+// ------------------------------------------------------------------ checking the numbers by hand
+const median = (v) => { const s = [...v].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+$("#selTrace").onchange = () => renderTrace();
+async function renderTrace() {
+  const r = S.r, crop = $("#selTrace").value;
+  if (!r || !crop) return;
+  const key = [r.state, r.season, crop, S.set.yield_method, r.data_version].join("|");
+  const q = new URLSearchParams({ state: r.state, season: r.season, crop, yield_method: S.set.yield_method });
+  const t = S.trace[key] || (S.trace[key] = await api(`/api/trace?${q}`));
+  if ($("#selTrace").value !== crop || S.r !== r) return;
+  const W = t.by_year.filter((y) => y.in_window), n = W.length;
+  const lo = W.reduce((a, b) => (b.area < a.area ? b : a)), hi = W.reduce((a, b) => (b.area > a.area ? b : a));
+  const sumY = W.reduce((s, y) => s + y.yield_, 0), sumA = W.reduce((s, y) => s + y.area, 0), sumP = W.reduce((s, y) => s + y.prod, 0);
+  const yc = { mean: sumY / n, median: median(W.map((y) => y.yield_)), weighted: sumP / sumA }[t.yield_method];
+  const F = {
+    mean: `y<sub>c</sub> = (1/n) Σ<sub>t</sub> P<sub>t</sub>/A<sub>t</sub> = <b>${fmt(sumY, 4)} / ${n} = ${fmt(yc, 4)}</b> t/ha<small>mean of the ${n} yearly yields in the table</small>`,
+    median: `y<sub>c</sub> = median<sub>t</sub> P<sub>t</sub>/A<sub>t</sub> = <b>${fmt(yc, 4)}</b> t/ha<small>middle of the ${n} yearly yields in the table</small>`,
+    weighted: `y<sub>c</sub> = Σ P<sub>t</sub> / Σ A<sub>t</sub> = <b>${fmt(sumP)} / ${fmt(sumA)} = ${fmt(yc, 4)}</b> t/ha<small>all production over all area, ${n} years</small>`,
+  }[t.yield_method];
+  const c = t.coef, same = (u, v) => Math.abs(u - v) <= 1e-4 * Math.max(1, Math.abs(v));
+  const ok = c && same(yc, c.y_c) && same(lo.area, c.a_c) && same(hi.area, c.m_c) && same(sumA / n, c.hist_area);
+  $("#traceMath").innerHTML = `
+    <p class="f">${F}</p>
+    <p class="f">a<sub>c</sub> = min<sub>t</sub> A<sub>t</sub> = <b>${fmt(lo.area)} ha</b><small>lower area limit: ${lo.Crop_Year}, the brown row</small></p>
+    <p class="f">m<sub>c</sub> = max<sub>t</sub> A<sub>t</sub> = <b>${fmt(hi.area)} ha</b><small>upper area limit: ${hi.Crop_Year}, the green row</small></p>
+    <p class="f">h<sub>c</sub> = (1/n) Σ<sub>t</sub> A<sub>t</sub> = <b>${fmt(sumA / n)} ha</b><small>historical area per year: the baseline the plan is compared with</small></p>
+    <p class="checks">${c ? `The LP uses y<sub>c</sub> = ${fmt(c.y_c, 4)}, a<sub>c</sub> = ${fmt(c.a_c)}, m<sub>c</sub> = ${fmt(c.m_c)}, h<sub>c</sub> = ${fmt(c.hist_area)}:
+      <span class="${ok ? "ok" : "no"}">${ok ? "✓ same as worked out here" : "✗ differs"}</span>` : `<span class="no">Not in the LP</span>: ${esc(t.why)}.`}
+      Years ${t.years[0]}–${t.years[1]}; a crop needs at least ${t.min_years} of them.</p>`;
+  $("#traceYears").innerHTML = `<table><thead><tr><th>Year</th><th class="r">Lines</th><th class="r">Area A<sub>t</sub> (ha)</th><th class="r">Production P<sub>t</sub> (t)</th><th class="r">P<sub>t</sub>/A<sub>t</sub></th></tr></thead><tbody>${
+    t.by_year.map((y) => `<tr class="${!y.in_window ? "out" : y === lo ? "lo" : y === hi ? "hi" : ""}"><td>${y.Crop_Year}${y.in_window ? "" : " <small>not averaged</small>"}</td>
+      <td class="r">${y.n}</td><td class="r">${fmt(y.area)}</td><td class="r">${fmt(y.prod, 1)}</td><td class="r">${fmt(y.yield_, 4)}</td></tr>`).join("")}</tbody></table>`;
+  const odd = new Set(r.unusual.map((u) => u.line));
+  $("#traceLines summary").textContent = `The ${fmt(t.lines.length)} CSV lines behind this table`;
+  $("#traceLinesNote").innerHTML = t.boundary_line
+    ? `Each year's area and production are the sums of these lines (districts). The file holds a second release of the data from line
+       ${fmt(t.boundary_line)} on, with production ×${t.factor}; it is divided back. A 1997–2015 record is on two lines and the first is used,
+       so <b>to remove a record, delete both lines</b>; editing the unused line changes nothing.`
+    : `Each year's area and production are the sums of these lines. ${t.split ? `The rows of the file were re-ordered, so each row's unit was decided from its year and yield (approximate); keep the original row order for exact results.` : ""}`;
+  $("#traceLines .table-wrap").innerHTML = table([
+    { k: "line", label: "CSV line", r: 1, f: (v) => fmt(v) }, { k: "year", label: "Year" }, { k: "district", label: "District", f: (v) => esc(title(v)) },
+    { k: "area", label: "Area (ha)", r: 1, f: (v) => fmt(v) }, { k: "prod", label: "Production (t)", r: 1, f: (v) => fmt(v, 1) },
+    { k: "line", label: "Note", f: (v, row) => [row.divided ? `÷${t.factor} (second release)` : "", row.twin ? `also on line ${fmt(row.twin)}, not used` : "",
+      odd.has(v) ? `<span class="flag">yield ${fmt(row.prod / row.area, 3)} t/ha, far from usual</span>` : ""].filter(Boolean).join(" · ") },
+  ], t.lines);
+}
+
+// ------------------------------------------------------------------ the data file can be edited while the app runs
+const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
+async function checkData() {
+  if (S.checking || document.hidden || !S.meta || !S.r) return;
+  S.checking = true;
+  let dimmed = false;
+  try {
+    const v = await api("/api/version");
+    if (v.version === S.meta.data.version) return;
+    status("Data file changed: reloading and re-solving…");
+    document.body.classList.add("loading"); dimmed = true;
+    const m = await api("/api/meta");                             // reads and cleans the edited file
+    if (m.data.version !== S.meta.data.version) {
+      S.meta = m; S.seasons = m.seasons; S.blocked = m.blocked || {};
+      S.india = {}; S.base = {}; S.cropData = {}; S.trace = {};
+      const st = usable($("#selState").value).length ? $("#selState").value : m.state, ok = usable(st);
+      fillSelects(st, ok.includes($("#selSeason").value) ? $("#selSeason").value : ok[0]);
+      S.note = `Data file changed (saved ${when(m.data.modified)}): re-solved with the edited data.`;
+      await run();
+    } else if (m.data.error) { S.meta.data.version = v.version; status(m.data.error, true); }
+  } catch (e) { /* server busy or restarting: try again next time */ } finally { S.checking = false; if (dimmed) document.body.classList.remove("loading"); }
+}
+setInterval(checkData, 2000);
+
 // ------------------------------------------------------------------ charts (drawn when their page is visible)
 // what the India and district maps show for each model
 const METRIC = {
@@ -414,6 +520,7 @@ const CHARTS = {
     const el = $("#chStates"); el.removeAllListeners?.("plotly_click"); el.on("plotly_click", (e) => selectState(e.points[0].y));
   },
   data(r) {
+    renderTrace();
     const ca = [...r.crop_area].reverse();
     plot("#chCropArea", [{ type: "bar", orientation: "h", y: ca.map((d) => d.Crop), x: ca.map((d) => d.area),
       marker: { color: ca.map((d) => (d.pooled ? ACC : GREY)) }, hovertemplate: "%{y}: %{x:,.0f} ha/yr<extra></extra>" }],
@@ -537,7 +644,7 @@ const CHARTS = {
 function draw(page) { if (S.r && CHARTS[page]) CHARTS[page](S.r); }
 
 // ------------------------------------------------------------------ start
-show();
+show(START);
 (async () => {
   status("Loading the dataset (about 10 s the first time)…");
   try {

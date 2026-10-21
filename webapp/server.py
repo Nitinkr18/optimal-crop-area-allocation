@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import threading
+import time
 import webbrowser
 from functools import lru_cache
 from pathlib import Path
@@ -33,7 +34,8 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 import or_core as oc  # noqa: E402
 
-GOV = ROOT / "Indian Agriculture Crop Production and yield (GOV)" / "Indian_crop_production_yield_dataset.csv"
+GOV = Path(os.environ.get("CROP_DATA") or
+           ROOT / "Indian Agriculture Crop Production and yield (GOV)" / "Indian_crop_production_yield_dataset.csv")
 DISTRICT_GEO = HERE / "geo" / "india_districts.json"
 PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
 DEFAULT_STATE, DEFAULT_SEASON = "Karnataka", "Kharif"
@@ -69,30 +71,86 @@ def records(df: pd.DataFrame, cols, rnd=4):
 
 
 # ---------------------------------------------------------------------------
-# data: read and cleaned once
+# data: read and cleaned once, and again whenever the CSV changes on disk
 # ---------------------------------------------------------------------------
+def _stamp():
+    s = GOV.stat()
+    return (s.st_mtime_ns, s.st_size)
+
+
+def _settled_stamp():
+    """Wait until the file stops changing, so a save in progress is never read half-written."""
+    last = _stamp()
+    for _ in range(20):
+        time.sleep(0.4)
+        now = _stamp()
+        if now == last:
+            return now
+        last = now
+    return last
+
+
+def _load() -> dict:
+    raw = pd.read_csv(GOV, low_memory=False)
+    raw["Source_Row"] = raw.index + 2                       # line number in the CSV (line 1 is the header)
+    data, rep = oc.clean(oc.standardise(raw, oc.guess_column_map(raw.columns)))
+    rpy = data.groupby("Crop_Year").size()
+    full = rpy[rpy >= 0.65 * rpy.median()].index           # drop partial years (1997, 2020)
+    years = (int(full.min()), int(full.max()))
+    win = oc.filter_scope(data, years=years)
+    area = win.groupby(["State_Name", "Season"])["Area"].sum()
+    seasons = {st: area[st].sort_values(ascending=False).index.tolist()
+               for st in sorted(win["State_Name"].unique())}
+    # seasons with fewer than 2 crops reported in enough years have no LP; the crop count does not depend
+    # on the model inputs, so it is found once here and the browser greys those seasons out
+    return dict(data=data, rep=rep, years=years, seasons=seasons, blocked=blocked_scopes(win, years))
+
+
+def blocked_scopes(win, years):
+    """
+    Seasons with fewer than 2 crops reported in enough years: solve_scope would return < 2 crops for them.
+    The same test as solve_scope, for all states and seasons in one pass: a crop counts if it is pooled
+    (weight unit, median yield within 250x of the scope's median of crop medians) and reported in at
+    least the loosest year threshold solve_scope tries. It does not depend on the model inputs.
+    """
+    n_years = years[1] - years[0] + 1
+    g = win.groupby(["State_Name", "Season", "Crop"]).agg(med=("Yield", "median"), n=("Crop_Year", "nunique")).reset_index()
+    pool_med = g.groupby(["State_Name", "Season"])["med"].transform("median")
+    ratio = g["med"] / pool_med
+    pooled = ~g["Crop"].isin(oc.NON_WEIGHT_UNITS) & (ratio <= 250) & (ratio >= 1 / 250)
+    usable = g[pooled & (g["n"] >= max(1, round(0.33 * n_years)))].groupby(["State_Name", "Season"]).size()
+    blocked = {}
+    for st, se in win[["State_Name", "Season"]].drop_duplicates().itertuples(index=False):
+        if usable.get((st, se), 0) < 2:
+            blocked.setdefault(st, []).append(se)
+    return blocked
+
+
 def db() -> dict:
+    """The cleaned data. Editing the CSV (change, add or delete rows) is picked up on the next request."""
     with _lock:
-        if not DB:
-            raw = pd.read_csv(GOV, low_memory=False)
-            data, rep = oc.clean(oc.standardise(raw, oc.guess_column_map(raw.columns)))
-            rpy = data.groupby("Crop_Year").size()
-            full = rpy[rpy >= 0.65 * rpy.median()].index           # drop partial years (1997, 2020)
-            years = (int(full.min()), int(full.max()))
-            win = oc.filter_scope(data, years=years)
-            area = win.groupby(["State_Name", "Season"])["Area"].sum()
-            seasons = {st: area[st].sort_values(ascending=False).index.tolist()
-                       for st in sorted(win["State_Name"].unique())}
-            # seasons with fewer than 2 crops reported in enough years have no LP; the crop count does not depend
-            # on the model inputs, so it is found once here and the browser greys those seasons out
-            blocked = {}
-            for st, ss in seasons.items():
-                for se in ss:
-                    _, coef, _ = solve_scope(oc.filter_scope(win, st, None, se), years)
-                    if len(coef) < 2:
-                        blocked.setdefault(st, []).append(se)
-            DB.update(data=data, rep=rep, years=years, seasons=seasons, blocked=blocked)
+        stamp = _stamp()
+        if DB.get("stamp") != stamp:
+            if DB.get("stamp"):                                  # a change while running: let the save finish first
+                stamp = _settled_stamp()
+            try:
+                fresh = _load()
+            except Exception as e:                           # e.g. the file is half-saved: keep the last good data
+                if DB.get("data") is None:
+                    raise
+                DB.update(stamp=stamp, load_error=f"Could not read the edited file ({e}); still showing the previous data.")
+            else:
+                DB.clear()
+                DB.update(fresh, stamp=stamp, load_error=None)
+                india.cache_clear()
+                crop_by_state.cache_clear()
         return DB
+
+
+def data_info(d):
+    return dict(file=GOV.name, version=str(d["stamp"][0]), rows_in=d["rep"].rows_in, rows_out=d["rep"].rows_out,
+                modified=pd.Timestamp(d["stamp"][0], unit="ns", tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
+                error=d.get("load_error"))
 
 
 class Settings(BaseModel):
@@ -152,13 +210,19 @@ def district_geo(state, names):
 # ---------------------------------------------------------------------------
 # routes
 # ---------------------------------------------------------------------------
+@app.get("/api/version")
+def version():
+    """Cheap check for the browser: has the CSV been saved since it was last read?"""
+    return J(dict(version=str(_stamp()[0]), loaded=str(DB["stamp"][0]) if DB.get("stamp") else None))
+
+
 @app.get("/api/meta")
 def meta():
     d = db()
     rep = d["rep"]
-    return J(dict(seasons=d["seasons"], blocked=d["blocked"], state=DEFAULT_STATE, season=DEFAULT_SEASON, years=d["years"],
+    return J(dict(seasons=d["seasons"], blocked=d["blocked"], data=data_info(d), state=DEFAULT_STATE, season=DEFAULT_SEASON, years=d["years"],
                   cleaning=dict(rows_in=rep.rows_in, rows_out=rep.rows_out,
-                                steps=[dict(step=a, removed=b) for a, b, w in rep.steps if b > 0])))
+                                steps=[dict(step=a, removed=b, note=w) for a, b, w in rep.steps])))
 
 
 @lru_cache(maxsize=32)
@@ -207,6 +271,45 @@ def crop_by_state(crop: str, season: str):
 @app.get("/api/crop")
 def crop_route(crop: str, season: str):
     return J(crop_by_state(crop, season))
+
+
+@app.get("/api/trace")
+def trace(state: str, season: str, crop: str, yield_method: str = "mean"):
+    """Every number behind one crop's LP coefficients, down to the CSV lines they come from, for checking by hand."""
+    d = db()
+    data, years, rep = d["data"], d["years"], d["rep"]
+    scope = oc.filter_scope(data, state, None, season)
+    rows = scope[scope["Crop"] == crop]
+    if rows.empty:
+        raise HTTPException(404, f"No {crop} records for {state} · {season}.")
+    st = Settings(yield_method=yield_method if yield_method in ("mean", "median", "weighted") else "mean")
+    unit, coef, min_years = solve_scope(oc.filter_scope(data, state, None, season, years), years, st)
+    used = coef[coef["Crop"] == crop]
+    u = unit[unit["Crop"] == crop]
+    why = None
+    if used.empty:
+        why = (u["reason"].iloc[0] if len(u) and u["status"].iloc[0] == "Exclude"
+               else f"reported in fewer than {min_years} of the {years[1] - years[0] + 1} years, so it is left out of the LP")
+    yr = rows.groupby("Crop_Year").agg(area=("Area", "sum"), prod=("Production", "sum"), n=("Area", "size")).reset_index()
+    yr["yield_"] = yr["prod"] / yr["area"]
+    yr["in_window"] = yr["Crop_Year"].between(*years)
+    s = rep.stacked or {}
+    b, twin = s.get("boundary_line"), s.get("twin_line")
+    lines = rows.sort_values(["Crop_Year", "District_Name"])
+    rev = s.get("revised_records")
+    if rev is not None and len(rev):
+        rev = rev[(rev["State_Name"] == state) & (rev["Season"] == season) & (rev["Crop"] == crop)]
+    return J(dict(
+        state=state, season=season, crop=crop, years=years, min_years=min_years, yield_method=st.yield_method,
+        included=not used.empty, why=why, factor=s.get("factor"), boundary_line=b, split=s.get("mode"),
+        coef=records(used, ["y_c", "a_c", "m_c", "hist_area", "years"], rnd=8)[0] if len(used) else None,
+        by_year=records(yr, ["Crop_Year", "area", "prod", "yield_", "n", "in_window"], rnd=6),
+        lines=[dict(line=int(r.Source_Row), district=r.District_Name, year=int(r.Crop_Year), area=float(r.Area),
+                    prod=float(r.Production), divided=r.Source_Row in s.get("scaled_lines", ()),
+                    twin=int(twin[r.Source_Row]) if twin is not None and r.Source_Row in twin.index else None)
+               for r in lines.itertuples()],
+        revised=records(rev, list(rev.columns)) if rev is not None and len(rev) else [],
+    ))
 
 
 class RunReq(BaseModel):
@@ -265,9 +368,17 @@ def run(req: RunReq):
              for c, g in ty.groupby(level=0)}
     all_years = oc.filter_scope(data, req.state, None, req.season).groupby("Crop_Year").size()
 
+    # rows whose yield is far from the crop's usual yield here (a typo or a unit slip moves y_c a lot)
+    lp = scope[scope["Crop"].isin(pooled)]
+    med = lp.groupby("Crop")["Yield"].transform("median")
+    odd = lp.assign(median=med, ratio=lp["Yield"] / med)
+    odd = odd[(odd["ratio"] > 10) | (odd["ratio"] < 0.1)]
+    n_odd = len(odd)
+    odd = odd.reindex(odd["ratio"].map(lambda v: abs(np.log10(v))).sort_values(ascending=False).index).head(10)
+
     alloc_cols = ["Crop", "y_c", "a_c", "m_c", "hist_area", "x_opt", "change_ha", "bound_status"]
     return J(dict(
-        state=req.state, season=req.season, years=years, min_years=min_years, unit="t", limits=limits,
+        state=req.state, season=req.season, years=years, min_years=min_years, unit="t", limits=limits, data_version=data_info(d)["version"],
         pulse_active=share is not None, pulse_crops=coef.loc[is_pulse, "Crop"].tolist(),
         profile=dict(records=len(scope), districts=len(dist) if len(dist) else int(scope["District_Name"].nunique()),
                      crops=int(scope["Crop"].nunique()), area=float(yearly["A"].mean()), production=float(yearly["P"].mean())),
@@ -276,12 +387,16 @@ def run(req: RunReq):
         yearly=dict(x=yearly.index.tolist(), area=yearly["A"].tolist(), prod=yearly["P"].tolist()),
         trend=trend,
         excluded=records(unit[unit["status"] == "Exclude"], ["Crop", "reason"]),
+        unusual_total=n_odd, unusual=[dict(line=int(r.Source_Row), crop=r.Crop, district=r.District_Name, year=int(r.Crop_Year), area=float(r.Area),
+                      prod=float(r.Production), yield_=float(r.Yield), median=float(r.median)) for r in odd.itertuples()],
+        data=data_info(d), cleaning=dict(rows_in=d["rep"].rows_in, rows_out=d["rep"].rows_out,
+                                         steps=[dict(step=a, removed=b, note=w) for a, b, w in d["rep"].steps]),
         coef=records(coef, ["Crop", "y_c", "yield_sd", "a_c", "m_c", "hist_area", "years"]),
         opt1=dict(L=L, L_hist=L0, D_hist=D0, Z=r1.objective, lam=r1.shadow_price, scipy_Z=r1.scipy_objective,
-                  gain_pct=100 * (r1.objective - D0) / D0, alloc=records(r1.alloc, alloc_cols)),
+                  gain_pct=100 * (r1.objective - D0) / D0, alloc=records(r1.alloc, alloc_cols, rnd=8)),
         opt2=dict(D=D, D_hist=D0, L_hist=L0, land=r2.objective, mu=r2.shadow_price, saving_pct=100 * (L0 - r2.objective) / L0,
                   inv_lam=1 / r1b.shadow_price if r1b.ok and r1b.shadow_price else None,
-                  alloc=records(r2.alloc, alloc_cols)),
+                  alloc=records(r2.alloc, alloc_cols, rnd=8)),
         curve=dict(L=curve["L"].tolist(), Z=curve["Z"].tolist(), lam=curve["shadow_price"].tolist()),
         band=records(band, ["band_pct", "output_gain_pct", "land_saving_pct"]),
         districts=records(dist, ["District", "crops", "output_gain_pct", "land_saving_pct"]) if len(dist) > 1 else [],
